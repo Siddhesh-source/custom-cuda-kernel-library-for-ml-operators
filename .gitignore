@@ -1,0 +1,41 @@
+# Build trees
+build/
+out/
+cmake-build-*/
+install/
+
+# IDE / editor
+.vs/
+.vscode/
+*.user
+*.suo
+
+# Binaries and objects
+*.exe
+*.dll
+*.so
+*.so.*
+*.dylib
+*.lib
+*.a
+*.exp
+*.pdb
+*.ilk
+*.obj
+*.o
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+
+# Remote-run scratch (generated push dirs and fetched kernel output)
+cloud/kaggle/_build/
+cloud/kaggle/_output/
+
+# Profiler output
+*.ncu-rep
+*.nsys-rep
+*.nvvp
+*.qdrep

@@ -1,0 +1,10 @@
+/* Generated from cmake/version.h.in -- do not edit. */
+#ifndef CCML_VERSION_H
+#define CCML_VERSION_H
+
+#define CCML_VERSION_MAJOR @ccml_VERSION_MAJOR@
+#define CCML_VERSION_MINOR @ccml_VERSION_MINOR@
+#define CCML_VERSION_PATCH @ccml_VERSION_PATCH@
+#define CCML_VERSION_STRING "@ccml_VERSION@"
+
+#endif /* CCML_VERSION_H */
