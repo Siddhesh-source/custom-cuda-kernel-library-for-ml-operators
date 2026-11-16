@@ -124,7 +124,15 @@ def build_payload() -> str:
                 relative = full.relative_to(REPO_ROOT).as_posix()
                 if set(relative.split("/")) & EXCLUDE_DIRS:
                     continue
-                tar.add(full, arcname=relative)
+                if full.suffix == ".sh":
+                    # Shell scripts run under bash on Linux: strip any CRLF a
+                    # Windows editor introduced, whatever the working copy has.
+                    data = full.read_bytes().replace(bytes([13, 10]), bytes([10]))
+                    info = tar.gettarinfo(str(full), arcname=relative)
+                    info.size = len(data)
+                    tar.addfile(info, io.BytesIO(data))
+                else:
+                    tar.add(full, arcname=relative)
                 file_count += 1
 
     encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
