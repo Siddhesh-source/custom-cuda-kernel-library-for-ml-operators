@@ -30,6 +30,17 @@ for s in "${suites[@]}"; do
       --print-limit 50 "$exe" > "$log" 2>&1
     rc=$?
     result=$(grep -E "ERROR SUMMARY|RACECHECK SUMMARY" "$log" | tail -1)
+    # One known, deliberate API error: infrastructure.cuda_failures_carry_the_runtime_message
+    # requests an impossible allocation to check that CUDA's message is preserved,
+    # and memcheck reports every failed API call. It is accepted ONLY if it is the
+    # sole error and comes from that test; anything else still fails the run.
+    if [ "$rc" -ne 0 ] && [ "$s" = infrastructure ] && [ "$t" = memcheck ] \
+       && grep -q "ERROR SUMMARY: 1 error" "$log" \
+       && grep -q "cudaErrorMemoryAllocation" "$log" \
+       && grep -q "cuda_failures_carry_the_runtime_message" "$log"; then
+      rc=0
+      result="$result (expected: deliberate OOM in cuda_failures_carry_the_runtime_message)"
+    fi
     printf '%-16s %-10s %-8s %s\n' "$s" "$t" "$rc" "${result:-no summary line}" >> "$summary"
     [ "$rc" -eq 0 ] || status=1
   done
