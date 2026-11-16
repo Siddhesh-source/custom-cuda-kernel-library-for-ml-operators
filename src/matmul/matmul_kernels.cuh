@@ -254,6 +254,187 @@ constexpr MatmulTileConfig kMatmulTileConfigs[] = {
 constexpr int kMatmulTileConfigCount =
     static_cast<int>(sizeof(kMatmulTileConfigs) / sizeof(kMatmulTileConfigs[0]));
 
+/* Four consecutive elements, aligned so that one load or store moves them all:
+   128 bits for float, 64 bits for the 16-bit types. */
+template <typename T>
+struct alignas(4 * sizeof(T)) Vec4 {
+  T v[4];
+};
+
+/*
+ * Vectorized, bank-conflict-free register blocking (docs/optimization-log.md,
+ * entry 2). Same tiling as matmul_register_tiled; only the memory accesses
+ * change:
+ *
+ *  - Global loads of A and B, and the store of C, move 4 elements per
+ *    instruction when kVec is true (the host checks that K and N are
+ *    multiples of 4 and every pointer is aligned). Otherwise they are scalar,
+ *    with the same zero-fill at the edges.
+ *  - A is staged transposed into As[k][m] with 4 floats of padding per row,
+ *    so the transposed stores of a warp spread over all 32 banks, and row
+ *    starts stay 16-byte aligned for vector reads.
+ *  - Each thread's TN columns are split into TN/4 chunks of 4, spaced
+ *    BN/(TN/4) apart. Consecutive threads then read consecutive 16-byte chunks
+ *    of Bs, so a warp's B reads cover distinct banks. With 8 contiguous
+ *    columns per thread (entry 1) they collided 4 ways.
+ *  - Shared-memory reads are float4: TM/4 + TN/4 loads per k-step instead of
+ *    TM + TN.
+ *
+ * Requires TM, TN and BK to be multiples of 4.
+ *
+ *   grid  = (div_up(N, BN), div_up(M, BM))
+ *   block = ((BM / TM) * (BN / TN))
+ */
+/* Occupancy floor: at least 2 resident blocks per SM. Without it the vector
+   temporaries push the kernel to 155 registers per thread, one block per SM
+   and 16.7% of warps active, which cancelled the memory gains (NCU,
+   docs/optimization-log.md entry 2). The bound makes the compiler fit 2
+   blocks (<= 128 registers per thread at 256 threads). */
+template <typename T, int BM, int BN, int BK, int TM, int TN, bool kVec>
+__global__ void __launch_bounds__((BM / TM) * (BN / TN), 2)
+matmul_vectorized(T* C, const T* A, const T* B, int M, int N, int K) {
+  using ccml::detail::to_float;
+  constexpr int kCols = BN / TN;
+  constexpr int kThreads = (BM / TM) * kCols;
+  constexpr int kChunksN = TN / 4;
+  constexpr int kChunkStride = BN / kChunksN;  /* == kCols * 4 */
+  constexpr int kPadA = 4;
+  static_assert(TM % 4 == 0 && TN % 4 == 0 && BK % 4 == 0,
+                "vectorized tiles need multiples of 4");
+  static_assert(BM % TM == 0 && BN % TN == 0, "tile must divide the block tile");
+
+  __shared__ __align__(16) float As[BK][BM + kPadA];  /* transposed, padded */
+  __shared__ __align__(16) float Bs[BK][BN];
+
+  const int tid = static_cast<int>(threadIdx.x);
+  const int thread_row = tid / kCols;
+  const int thread_col = tid % kCols;
+  const int block_row = static_cast<int>(blockIdx.y) * BM;
+  const int block_col = static_cast<int>(blockIdx.x) * BN;
+
+  float acc[TM][TN];
+#pragma unroll
+  for (int i = 0; i < TM; ++i) {
+#pragma unroll
+    for (int j = 0; j < TN; ++j) acc[i][j] = 0.0f;
+  }
+  float a_reg[TM];
+  float b_reg[TN];
+
+  for (int k0 = 0; k0 < K; k0 += BK) {
+    /* Stage A: BM x BK as quads of 4 consecutive k. Two adjacent threads share
+       a row, so a warp reads 16 rows x 32 contiguous bytes. */
+    for (int q = tid; q < BM * BK / 4; q += kThreads) {
+      const int r = q / (BK / 4);
+      const int c = (q % (BK / 4)) * 4;
+      const int gr = block_row + r;
+      const int gc = k0 + c;
+      float v[4];
+      if (kVec) {
+        /* K % 4 == 0 and gc % 4 == 0, so gc < K implies gc + 3 < K. */
+        if (gr < M && gc < K) {
+          const Vec4<T> x =
+              *reinterpret_cast<const Vec4<T>*>(A + static_cast<long long>(gr) * K + gc);
+#pragma unroll
+          for (int j = 0; j < 4; ++j) v[j] = to_float(x.v[j]);
+        } else {
+#pragma unroll
+          for (int j = 0; j < 4; ++j) v[j] = 0.0f;
+        }
+      } else {
+#pragma unroll
+        for (int j = 0; j < 4; ++j) {
+          v[j] = (gr < M && gc + j < K)
+                     ? to_float(A[static_cast<long long>(gr) * K + gc + j])
+                     : 0.0f;
+        }
+      }
+#pragma unroll
+      for (int j = 0; j < 4; ++j) As[c + j][r] = v[j];
+    }
+
+    /* Stage B: BK x BN as quads of 4 consecutive columns; consecutive threads
+       take consecutive quads, so both the global read and the shared store
+       are contiguous. */
+    for (int q = tid; q < BK * BN / 4; q += kThreads) {
+      const int r = q / (BN / 4);
+      const int c = (q % (BN / 4)) * 4;
+      const int gr = k0 + r;
+      const int gc = block_col + c;
+      float v[4];
+      if (kVec) {
+        if (gr < K && gc < N) {
+          const Vec4<T> x =
+              *reinterpret_cast<const Vec4<T>*>(B + static_cast<long long>(gr) * N + gc);
+#pragma unroll
+          for (int j = 0; j < 4; ++j) v[j] = to_float(x.v[j]);
+        } else {
+#pragma unroll
+          for (int j = 0; j < 4; ++j) v[j] = 0.0f;
+        }
+      } else {
+#pragma unroll
+        for (int j = 0; j < 4; ++j) {
+          v[j] = (gr < K && gc + j < N)
+                     ? to_float(B[static_cast<long long>(gr) * N + gc + j])
+                     : 0.0f;
+        }
+      }
+      *reinterpret_cast<float4*>(&Bs[r][c]) = make_float4(v[0], v[1], v[2], v[3]);
+    }
+    __syncthreads();
+
+#pragma unroll
+    for (int k = 0; k < BK; ++k) {
+#pragma unroll
+      for (int i4 = 0; i4 < TM / 4; ++i4) {
+        const float4 a4 = *reinterpret_cast<const float4*>(&As[k][thread_row * TM + i4 * 4]);
+        a_reg[i4 * 4 + 0] = a4.x;
+        a_reg[i4 * 4 + 1] = a4.y;
+        a_reg[i4 * 4 + 2] = a4.z;
+        a_reg[i4 * 4 + 3] = a4.w;
+      }
+#pragma unroll
+      for (int c4 = 0; c4 < kChunksN; ++c4) {
+        const float4 b4 =
+            *reinterpret_cast<const float4*>(&Bs[k][c4 * kChunkStride + thread_col * 4]);
+        b_reg[c4 * 4 + 0] = b4.x;
+        b_reg[c4 * 4 + 1] = b4.y;
+        b_reg[c4 * 4 + 2] = b4.z;
+        b_reg[c4 * 4 + 3] = b4.w;
+      }
+#pragma unroll
+      for (int i = 0; i < TM; ++i) {
+#pragma unroll
+        for (int j = 0; j < TN; ++j) acc[i][j] += a_reg[i] * b_reg[j];
+      }
+    }
+    __syncthreads();
+  }
+
+#pragma unroll
+  for (int i = 0; i < TM; ++i) {
+    const int r = block_row + thread_row * TM + i;
+    if (r >= M) continue;
+#pragma unroll
+    for (int c4 = 0; c4 < kChunksN; ++c4) {
+      const int col0 = block_col + c4 * kChunkStride + thread_col * 4;
+      T* out = C + static_cast<long long>(r) * N + col0;
+      if (kVec && col0 + 3 < N) {
+        Vec4<T> x;
+#pragma unroll
+        for (int j = 0; j < 4; ++j) x.v[j] = ccml::detail::from_float<T>(acc[i][c4 * 4 + j]);
+        *reinterpret_cast<Vec4<T>*>(out) = x;
+      } else {
+#pragma unroll
+        for (int j = 0; j < 4; ++j) {
+          if (col0 + j < N) out[j] = ccml::detail::from_float<T>(acc[i][c4 * 4 + j]);
+        }
+      }
+    }
+  }
+}
+
 }  // namespace kernels
 }  // namespace ccml
 

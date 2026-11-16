@@ -4,6 +4,7 @@
 
 #include <cstdio>
 #include <exception>
+#include <utility>
 #include <vector>
 
 #include "bench/baselines/cublas.h"
@@ -61,7 +62,8 @@ int main(int argc, char** argv) {
       const double gflop = matmul_flops(M, N, K) / 1e9;
       if (options.wants("ccml")) {
         for (ccml_matmul_algo algo :
-             {CCML_MATMUL_NAIVE, CCML_MATMUL_TILED, CCML_MATMUL_REGISTER_TILED}) {
+             {CCML_MATMUL_NAIVE, CCML_MATMUL_TILED, CCML_MATMUL_REGISTER_TILED,
+              CCML_MATMUL_VECTORIZED}) {
           /* Over the cap the naive kernel is reported NOT_RUN, never timed. */
           const bool skip = algo == CCML_MATMUL_NAIVE && options.naive_max_gflop > 0.0 &&
                             gflop > options.naive_max_gflop;
@@ -72,21 +74,28 @@ int main(int argc, char** argv) {
                                 }});
         }
       }
-      /* Tile sweep: every REGISTER_TILED configuration as its own row, named by
-         its tile shape. Index 0 duplicates "register_tiled" on purpose, so the
-         sweep and the enum path can be cross-checked in one table. */
+      /* Tile sweep: every configuration of every tiled variant as its own row,
+         named <variant prefix>_<tile shape> ("rt_" register_tiled, "vec_"
+         vectorized). Index 0 duplicates the enum path on purpose, so the two
+         can be cross-checked in one table. An unsupported pairing reports
+         NOT_RUN. */
       if (options.wants("ccml_tiles") && options.tile_sweep) {
-        for (int index = 0; index < ccml_matmul_tile_config_count(); ++index) {
-          ccml_matmul_tile_config t;
-          ccml_matmul_tile_config_get(index, &t);
-          const std::string name = "rt_" + std::to_string(t.bm) + "x" + std::to_string(t.bn) +
-                                   "x" + std::to_string(t.bk) + "_" + std::to_string(t.tm) +
-                                   "x" + std::to_string(t.tn);
-          candidates.push_back({"ccml_tiles", name, [&, index] {
-                                  return ccml_matmul_register_tiled_f32(
-                                             c.data(), a.data(), b.data(), M, N, K, index,
-                                             stream) == CCML_SUCCESS;
-                                }});
+        const std::pair<ccml_matmul_algo, const char*> family[] = {
+            {CCML_MATMUL_REGISTER_TILED, "rt_"}, {CCML_MATMUL_VECTORIZED, "vec_"}};
+        for (const auto& [variant, prefix] : family) {
+          for (int index = 0; index < ccml_matmul_tile_config_count(); ++index) {
+            ccml_matmul_tile_config t;
+            ccml_matmul_tile_config_get(index, &t);
+            const std::string name = prefix + std::to_string(t.bm) + "x" + std::to_string(t.bn) +
+                                     "x" + std::to_string(t.bk) + "_" + std::to_string(t.tm) +
+                                     "x" + std::to_string(t.tn);
+            const ccml_matmul_algo v = variant;
+            candidates.push_back({"ccml_tiles", name, [&, v, index] {
+                                    return ccml_matmul_tuned_f32(c.data(), a.data(), b.data(), M,
+                                                                 N, K, v, index,
+                                                                 stream) == CCML_SUCCESS;
+                                  }});
+          }
         }
       }
       if (options.wants("cublas")) {

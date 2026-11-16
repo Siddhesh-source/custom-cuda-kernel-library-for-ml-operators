@@ -175,26 +175,42 @@ CCML_TEST(matmul, wide_and_thin) {
 
 /* ------------------------------------------- added with register blocking -- */
 
-/* Every tile configuration of REGISTER_TILED, on shapes chosen so that no
-   dimension is a multiple of any block or thread tile, plus the degenerate
-   ones (a single row, a single column, K = 1). A configuration that only
-   works on friendly shapes is wrong. */
-CCML_TEST(matmul, register_tiled_every_config_on_awkward_shapes) {
+/* Every tile configuration of the tiled family (REGISTER_TILED, VECTORIZED),
+   on shapes chosen so that no dimension is a multiple of any block or thread
+   tile, plus the degenerate ones (a single row, a single column, K = 1). A
+   configuration that only works on friendly shapes is wrong.
+
+   VECTORIZED takes its 128-bit global path only when K and N are multiples of
+   4, so the list also has shapes that satisfy that (with M still awkward),
+   or the vector path would go untested. */
+CCML_TEST(matmul, tiled_family_every_config_on_awkward_shapes) {
   const int shapes[][3] = {{1, 1, 1},     {1, 512, 512}, {512, 1, 512},  {512, 512, 1},
                            {17, 33, 65},  {131, 67, 97}, {128, 128, 128}, {255, 257, 129},
-                           {3, 768, 768}, {1000, 1000, 33}, {2047, 129, 513}};
+                           {3, 768, 768}, {1000, 1000, 33}, {2047, 129, 513},
+                           /* N, K multiples of 4: the vector path */
+                           {131, 132, 136}, {1, 2304, 768}, {257, 516, 260}, {7, 4, 4}};
   const int configs = ccml_matmul_tile_config_count();
   ctx.check(configs >= 1, "at least one tile configuration");
 
+  for (ccml_matmul_algo algo : {CCML_MATMUL_REGISTER_TILED, CCML_MATMUL_VECTORIZED}) {
   for (int index = 0; index < configs; ++index) {
     ccml_matmul_tile_config cfg;
     CCML_ASSERT_OK(ccml_matmul_tile_config_get(index, &cfg));
+    if (algo == CCML_MATMUL_VECTORIZED &&
+        (cfg.tm % 4 != 0 || cfg.tn % 4 != 0 || cfg.bk % 4 != 0)) {
+      /* Unsupported pairing: must be rejected, never run with a wrong layout. */
+      DeviceBuffer d(4);
+      ctx.check(ccml_matmul_tuned_f32(d.data(), d.data(), d.data(), 2, 2, 1, algo, index,
+                                      nullptr) == CCML_ERROR_INVALID_ARGUMENT,
+                "VECTORIZED rejects a configuration with TM or TN not a multiple of 4");
+      continue;
+    }
     double worst_normalized = 0.0;
     for (const auto& shape : shapes) {
       const int M = shape[0], N = shape[1], K = shape[2];
       std::vector<float> host_a(static_cast<std::size_t>(M) * K);
       std::vector<float> host_b(static_cast<std::size_t>(K) * N);
-      Rng rng(1000 + static_cast<std::uint64_t>(index) * 97 + M + N + K);
+      Rng rng(1000 + static_cast<std::uint64_t>(index) * 97 + M + N + K + algo);
       rng.normal(host_a.data(), host_a.size(), 0.0f, 1.0f);
       rng.normal(host_b.data(), host_b.size(), 0.0f, 1.0f);
       std::vector<double> expected;
@@ -205,8 +221,8 @@ CCML_TEST(matmul, register_tiled_every_config_on_awkward_shapes) {
       b.upload(host_b.data());
       /* Poison: an element the kernel fails to write cannot pass. */
       CCML_ASSERT_OK(ccml_device_memset_async(c.data(), 0xFF, c.bytes(), nullptr));
-      CCML_ASSERT_OK(ccml_matmul_register_tiled_f32(c.data(), a.data(), b.data(), M, N, K,
-                                                    index, nullptr));
+      CCML_ASSERT_OK(ccml_matmul_tuned_f32(c.data(), a.data(), b.data(), M, N, K,
+                                           algo, index, nullptr));
       CCML_ASSERT_OK(ccml_device_synchronize());
       std::vector<float> got(c.count());
       c.download(got.data());
@@ -216,18 +232,19 @@ CCML_TEST(matmul, register_tiled_every_config_on_awkward_shapes) {
       const ccml_test::ErrorStats stats = ccml_test::compare(got, expected, tol);
       worst_normalized = std::fmax(worst_normalized, stats.max_normalized_error);
       if (!ccml_test::within(stats)) {
-        ctx.fail("config " + std::to_string(index) + " (" + std::to_string(cfg.bm) + "x" +
+        ctx.fail(std::string(ccml_matmul_algo_name(algo)) + " config " + std::to_string(index) + " (" + std::to_string(cfg.bm) + "x" +
                  std::to_string(cfg.bn) + "x" + std::to_string(cfg.bk) + ", " +
                  std::to_string(cfg.tm) + "x" + std::to_string(cfg.tn) + ") failed at M=" +
                  std::to_string(M) + " N=" + std::to_string(N) + " K=" + std::to_string(K) +
                  " -- " + stats.to_string());
       }
     }
-    ctx.note("config " + std::to_string(index) + " " + std::to_string(cfg.bm) + "x" +
+    ctx.note(std::string(ccml_matmul_algo_name(algo)) + " config " + std::to_string(index) + " " + std::to_string(cfg.bm) + "x" +
              std::to_string(cfg.bn) + "x" + std::to_string(cfg.bk) + " thread " +
              std::to_string(cfg.tm) + "x" + std::to_string(cfg.tn) + " (" +
              std::to_string(cfg.threads) + " threads): worst normalized error " +
              std::to_string(worst_normalized));
+  }
   }
 }
 
@@ -246,8 +263,9 @@ CCML_TEST(matmul, tile_config_api_rejects_bad_input) {
             "index == count");
   ctx.check(ccml_matmul_tile_config_get(0, nullptr) == CCML_ERROR_INVALID_ARGUMENT, "null out");
   DeviceBuffer d(4);
-  ctx.check(ccml_matmul_register_tiled_f32(d.data(), d.data(), d.data(), 2, 2, 1,
-                                           ccml_matmul_tile_config_count(), nullptr) ==
+  ctx.check(ccml_matmul_tuned_f32(d.data(), d.data(), d.data(), 2, 2, 1,
+                                  CCML_MATMUL_REGISTER_TILED,
+                                  ccml_matmul_tile_config_count(), nullptr) ==
                 CCML_ERROR_INVALID_ARGUMENT,
             "config index out of range is rejected, not clamped");
   for (int i = 0; i < ccml_matmul_tile_config_count(); ++i) {
@@ -255,4 +273,41 @@ CCML_TEST(matmul, tile_config_api_rejects_bad_input) {
     ctx.check(cfg.threads == (cfg.bm / cfg.tm) * (cfg.bn / cfg.tn) && cfg.threads <= 1024,
               "thread count consistent and launchable");
   }
+}
+
+/* The vector path's preconditions are checked at run time, so misaligned
+   pointers (a sub-tensor view starting one element in) must silently take the
+   scalar path -- and still be right. */
+CCML_TEST(matmul, vectorized_handles_misaligned_pointers) {
+  const int M = 64, N = 128, K = 96;  /* multiples of 4: only alignment differs */
+  std::vector<float> host_a(static_cast<std::size_t>(M) * K + 1), host_b(static_cast<std::size_t>(K) * N + 1);
+  Rng rng(940);
+  rng.normal(host_a.data(), host_a.size(), 0.0f, 1.0f);
+  rng.normal(host_b.data(), host_b.size(), 0.0f, 1.0f);
+  const std::vector<float> a_view(host_a.begin() + 1, host_a.end());
+  const std::vector<float> b_view(host_b.begin() + 1, host_b.end());
+  std::vector<double> expected;
+  ccml_test::matmul_reference(expected, a_view, b_view, M, N, K);
+
+  DeviceBuffer a(host_a.size()), b(host_b.size()), c(static_cast<std::size_t>(M) * N + 1);
+  a.upload(host_a.data());
+  b.upload(host_b.data());
+  CCML_ASSERT_OK(ccml_matmul_f32(c.data() + 1, a.data() + 1, b.data() + 1, M, N, K,
+                                 CCML_MATMUL_VECTORIZED, nullptr));
+  CCML_ASSERT_OK(ccml_device_synchronize());
+  std::vector<float> got_all(c.count());
+  c.download(got_all.data());
+  const std::vector<float> got(got_all.begin() + 1, got_all.end());
+  const ccml_test::Tolerance tol =
+      ccml_test::tolerance_for_f32_dot_product(K, ccml_test::rms(expected));
+  const ccml_test::ErrorStats stats = ccml_test::compare(got, expected, tol);
+  ctx.note(stats.to_string());
+  ctx.check(ccml_test::within(stats), "misaligned views must still be correct");
+}
+
+CCML_TEST(matmul, vectorized_through_the_algo_enum) {
+  run_case(ctx, 128, 768, 768, CCML_MATMUL_VECTORIZED, 950);
+  run_case(ctx, 131, 67, 97, CCML_MATMUL_VECTORIZED, 951);
+  run_case(ctx, 1, 2304, 768, CCML_MATMUL_VECTORIZED, 952);
+  run_case(ctx, 256, 96, 2048, CCML_MATMUL_VECTORIZED, 953);
 }

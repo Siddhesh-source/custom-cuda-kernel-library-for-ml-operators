@@ -135,7 +135,10 @@ once the T4 tile sweep lands.
 
 ## 2. Matmul: vectorized loads and conflict-free shared memory (`CCML_MATMUL_VECTORIZED`)
 
-**Status:** hypothesis committed; implementation in progress.
+**Status:** implemented and correct (all dtypes, every compatible tile
+configuration, aligned and misaligned pointers). Local sm_89 evidence supports
+all four predictions **after one correction** (below). The official T4 timings
+are pending.
 
 ### Hypothesis
 
@@ -186,12 +189,76 @@ latency (double buffering).
 
 ### Change
 
-*(pending)*
+- `matmul_vectorized<T, BM, BN, BK, TM, TN, kVec>` in
+  `src/matmul/matmul_kernels.cuh`; `CCML_MATMUL_VECTORIZED`, configuration 0.
+  The host picks `kVec` (128-bit global access) when K and N are multiples of
+  4 and A, B and C are aligned; otherwise the same kernel runs with scalar
+  global access. Configuration 5 (TM = 2) is rejected for this variant.
+- The tuning API became `ccml_matmul_tuned_<dtype>(..., algo, config, ...)` for
+  the whole tiled family; the bench sweep names rows `rt_*` and `vec_*`.
+- Tests: every compatible configuration on 15 shapes (4 of them with N and K
+  multiples of 4, so the vector path is exercised); misaligned views
+  (pointers offset by one element); FP16 and BF16. All pass.
+
+**Correction during the step: an occupancy floor.** The first version was
+*slower* than REGISTER_TILED on the largest shape. NCU showed why: the vector
+temporaries raised register use from 126 to **155 per thread**, so only **1
+block per SM** fit and active warps halved (33% to 16.7%). Adding
+`__launch_bounds__(threads, 2)` (at least 2 resident blocks) brought it to
+**127 registers with no spills** (`cuobjdump --dump-resource-usage`: `LOCAL:0`).
+This is the falsification case the hypothesis named ("no speedup despite fewer
+conflicts means occupancy is the limiter"), confirmed and then fixed. Both
+measurements are kept below.
 
 ### Evidence
 
-*(pending)*
+**Nsight Compute, local sm_89, before the occupancy floor**
+(`profiles/sm_89/matmul/register_tiled_vs_vectorized_*.ncu-rep` and the
+`_metrics.csv` files next to them):
+
+| Metric | register_tiled | vectorized (155 regs) | Prediction |
+|---|---|---|---|
+| Shared-load bank conflicts, 2048x4096x1024 | 33.5 M | **0** | near zero ✅ |
+| Shared-store bank conflicts, same shape | 14.7 M | 0.56 M | near zero ✅ |
+| Shared-load wavefronts, same shape | 84.1 M | 50.3 M | ~half ✅ (-40%) |
+| Global load requests, same shape | 4.19 M | 1.05 M | 4x fewer ✅ |
+| Shared-load bank conflicts, 512x3072x768 | 4.72 M | **0** | ✅ |
+| MIO-throttle stall (per issue) | 0.28 | 0.016 | |
+| Registers per thread | 126 | **155** | not anticipated |
+| Blocks per SM (register limit) | 2 | **1** | |
+| Warps active | 33% | **16.7%** | |
+
+**Timings, local RTX 3050 A Laptop sm_89 (indicative), FP32, warm L2, median
+of 200, candidates interleaved in one run**
+(`results/sm_89/vectorized_*.csv`; the pre-fix run is in
+`vectorized_before_bound_*.csv`):
+
+| Shape | register_tiled | vectorized, 155 regs | **vectorized, 127 regs** | cuBLAS |
+|---|---|---|---|---|
+| 2048x4096x1024 | 4,990-5,330 us * | 5,363 us (0.93x) | **4,355 us (1.22x), 45.3% of peak** | 3,911 us (50.4%) |
+| 512x3072x768 | 762-764 us | 686 us (1.11x) | **570 us (1.34x), 48.6%** | 458 us (60.5%) |
+| 16x2304x768 | 172-199 us | 170 us | 159 us; best config 32x64x16: **49 us** | 40 us |
+
+\* The same kernel varied about 7% between separate runs on the laptop
+(thermal and power state). This is why each comparison is made within one
+interleaved run, and why the official numbers come from the T4.
 
 ### Verdict
 
-*(pending)*
+**Kept**, with the occupancy floor.
+
+1. Bank conflicts to near zero: **met** (load 0, store down 96%).
+2. Shared-load wavefronts about halved: **met** (-40%).
+3. 1.2-1.6x over REGISTER_TILED, 45-60% of peak, on large shapes: **met
+   only after the occupancy fix** (1.22-1.34x, 45-49%). Without it, 0.93-1.11x.
+   The lesson: a memory optimization that costs registers can lose more
+   occupancy than it saves, and NCU's register and warps-active counters are
+   the check.
+4. Decode shapes barely change: **met** for configuration 0. The small
+   32x64x16 tile remains the right choice there, which per-shape dispatch (S4)
+   will use.
+
+**Gap to cuBLAS** on the largest shape is now 1.11x (local). The next step is
+double buffering (entry 3): overlap the next tile's global loads with the
+current tile's math, since `long_scoreboard` (waiting on global memory) is now
+the largest remaining stall (1.50 per issue).

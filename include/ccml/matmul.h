@@ -19,7 +19,8 @@ typedef enum ccml_matmul_algo {
   CCML_MATMUL_AUTO  = 0, /* library picks; currently resolves to TILED */
   CCML_MATMUL_NAIVE = 1, /* one thread per output element; correctness baseline */
   CCML_MATMUL_TILED = 2, /* shared-memory tiled */
-  CCML_MATMUL_REGISTER_TILED = 3  /* block tile + per-thread register tile */
+  CCML_MATMUL_REGISTER_TILED = 3, /* block tile + per-thread register tile */
+  CCML_MATMUL_VECTORIZED = 4      /* REGISTER_TILED with 128-bit, conflict-free memory access */
 } ccml_matmul_algo;
 
 CCML_API const char* ccml_matmul_algo_name(ccml_matmul_algo algo);
