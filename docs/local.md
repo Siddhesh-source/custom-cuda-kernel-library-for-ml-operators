@@ -28,25 +28,26 @@ optional.
 
 ## Local setup: one time
 
-1. **Windows SDK.** Without it nvcc cannot compile anything on Windows.
-   In the Visual Studio Installer, choose Modify → Desktop development with C++
-   → tick *Windows 11 SDK*. Check it with `echo %WindowsSdkDir%` in a Developer
-   Command Prompt.
-2. **Ninja:** `pip install ninja`. Configure from a Developer Command Prompt
-   (`vcvars64.bat`) so that Ninja finds `cl.exe`.
-3. **Build for sm_89:**
-   ```
-   cmake -B build/local -G Ninja -DCCML_CUDA_ARCHITECTURES=89
-   cmake --build build/local
-   ctest --test-dir build/local
-   ```
-4. **GPU performance counters (L3).** In the NVIDIA Control Panel, open Desktop
-   → Enable Developer Settings, then Developer → Manage GPU Performance
-   Counters → *Allow access to the GPU performance counters to all users*.
-   Reboot. Check with
-   `ncu --metrics sm__throughput.avg.pct_of_peak_sustained_elapsed build/local/bin/ccml_test_softmax`.
-5. **Optional:** a CUDA build of PyTorch in `.venv`, only if you want to run L1
-   or L2 through Python.
+**Status (2026-11-16): done, except for one reboot.**
+
+| Step | State |
+|---|---|
+| 1. MSVC 14.44 + Windows SDK 10.0.26100: VS 2022 Build Tools at `D:\BuildTools2022` (only the VC x64 tools and the SDK) | ✅ installed |
+| 2. Ninja 1.13 (`pip install --user ninja`) | ✅ installed |
+| 3. Local sm_89 build: `powershell -File scripts/local_build.ps1` (loads vcvars64, then runs `cmake --workflow --preset local`) | ✅ **5/5 suites pass on the RTX 3050 A (sm_89)** |
+| 4. GPU performance counters for all users: `HKLM\SYSTEM\CurrentControlSet\Services\nvlddmkm\Global\NVTweak\RmProfilingAdminOnly = 0` | ✅ set; **⏳ takes effect after a reboot** |
+| 5. CUDA PyTorch in `.venv` | Not installed. Only needed to drive L1/L2 from Python |
+
+After the reboot, check counter access with:
+
+    ncu --metrics sm__throughput.avg.pct_of_peak_sustained_elapsed --launch-count 1 build\local\bin\ccml_test_softmax.exe
+
+It should print a percentage instead of `ERR_NVGPUCTRPERM`. The alternative is
+to run `ncu` from an elevated (administrator) prompt, which works without the
+reboot.
+
+Rebuilding from scratch needs no Developer Command Prompt; the script sets the
+environment itself.
 
 ## Workflow for L3 (Nsight Compute)
 

@@ -25,6 +25,16 @@
         "CMAKE_BUILD_TYPE": "Debug",
         "CCML_CUDA_ARCHITECTURES": "75"
       }
+    },
+    {
+      "name": "local",
+      "displayName": "Release, sm_89 (local RTX 3050 A, docs/local.md items only), Ninja",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/local",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CCML_CUDA_ARCHITECTURES": "89"
+      }
     }
   ],
   "buildPresets": [
@@ -35,6 +45,10 @@
     {
       "name": "debug",
       "configurePreset": "debug"
+    },
+    {
+      "name": "local",
+      "configurePreset": "local"
     }
   ],
   "testPresets": [
@@ -51,6 +65,13 @@
       "output": {
         "outputOnFailure": true
       }
+    },
+    {
+      "name": "local",
+      "configurePreset": "local",
+      "output": {
+        "outputOnFailure": true
+      }
     }
   ],
   "workflowPresets": [
@@ -58,26 +79,68 @@
       "name": "build",
       "displayName": "Configure and build everything",
       "steps": [
-        { "type": "configure", "name": "default" },
-        { "type": "build", "name": "default" }
+        {
+          "type": "configure",
+          "name": "default"
+        },
+        {
+          "type": "build",
+          "name": "default"
+        }
       ]
     },
     {
       "name": "default",
       "displayName": "Configure, build, and run every correctness test",
       "steps": [
-        { "type": "configure", "name": "default" },
-        { "type": "build", "name": "default" },
-        { "type": "test", "name": "default" }
+        {
+          "type": "configure",
+          "name": "default"
+        },
+        {
+          "type": "build",
+          "name": "default"
+        },
+        {
+          "type": "test",
+          "name": "default"
+        }
       ]
     },
     {
       "name": "debug",
       "displayName": "Debug build with synchronous launch checks, then test",
       "steps": [
-        { "type": "configure", "name": "debug" },
-        { "type": "build", "name": "debug" },
-        { "type": "test", "name": "debug" }
+        {
+          "type": "configure",
+          "name": "debug"
+        },
+        {
+          "type": "build",
+          "name": "debug"
+        },
+        {
+          "type": "test",
+          "name": "debug"
+        }
+      ]
+    },
+    {
+      "name": "local",
+      "displayName": "Local sm_89: configure, build, test",
+      "steps": [
+        {
+          "type": "configure",
+          "name": "local"
+        },
+        {
+          "type": "build",
+          "name": "local"
+        },
+        {
+          "type": "test",
+          "name": "local"
+        }
       ]
     }
   ]

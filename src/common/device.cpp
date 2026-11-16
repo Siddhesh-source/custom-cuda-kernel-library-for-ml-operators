@@ -42,8 +42,15 @@ ccml_status ccml_get_device_info(int device, ccml_device_info* info) {
   info->total_global_mem               = prop.totalGlobalMem;
   info->l2_cache_size                  = prop.l2CacheSize;
   info->memory_bus_width               = prop.memoryBusWidth;
-  info->memory_clock_khz               = prop.memoryClockRate;
-  info->clock_khz                      = prop.clockRate;
+  /* cudaDeviceProp::clockRate and ::memoryClockRate were removed in CUDA 13;
+     the attribute query works on every toolkit from 12.0 on. Both are kHz. */
+  int memory_clock_khz = 0;
+  int clock_khz        = 0;
+  CCML_CUDA_TRY(cudaDeviceGetAttribute(&memory_clock_khz,
+                                       cudaDevAttrMemoryClockRate, device));
+  CCML_CUDA_TRY(cudaDeviceGetAttribute(&clock_khz, cudaDevAttrClockRate, device));
+  info->memory_clock_khz               = memory_clock_khz;
+  info->clock_khz                      = clock_khz;
   return CCML_SUCCESS;
 }
 
