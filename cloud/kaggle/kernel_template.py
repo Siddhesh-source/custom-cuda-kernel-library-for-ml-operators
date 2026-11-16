@@ -210,9 +210,20 @@ def main():
     commit_file = os.path.join(SOURCE, ".ccml_commit")
     if os.path.exists(commit_file):
         commit = open(commit_file, encoding="utf-8").read().strip()
-    run("GPU job (scripts/kaggle_job.sh)",
+    job, impls = "all", "all"
+    job_file = os.path.join(SOURCE, ".ccml_job")
+    if os.path.exists(job_file):
+        parts = open(job_file, encoding="utf-8").read().split()
+        job = parts[0] if parts else job
+        impls = parts[1] if len(parts) > 1 else impls
+    if job == "build":
+        emit()
+        emit("Job 'build': compile check only.")
+        log_file.close()
+        return
+    run("GPU job (scripts/kaggle_job.sh " + job + " " + impls + ")",
         ["bash", os.path.join(SOURCE, "scripts", "kaggle_job.sh"), SOURCE, BUILD,
-         os.path.join(WORK, "out")],
+         os.path.join(WORK, "out"), job, impls],
         check=False, env={"CCML_COMMIT": commit})
 
     emit()

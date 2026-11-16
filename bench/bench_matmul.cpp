@@ -57,21 +57,31 @@ int main(int argc, char** argv) {
       b.upload(host_b.data());
 
       std::vector<Candidate> candidates;
-      for (ccml_matmul_algo algo : {CCML_MATMUL_NAIVE, CCML_MATMUL_TILED}) {
-        candidates.push_back({"ccml", ccml_matmul_algo_name(algo), [&, algo] {
-                                return ccml_matmul_f32(c.data(), a.data(), b.data(), M,
-                                                       N, K, algo, stream) ==
-                                       CCML_SUCCESS;
+      const double gflop = matmul_flops(M, N, K) / 1e9;
+      if (options.wants("ccml")) {
+        for (ccml_matmul_algo algo : {CCML_MATMUL_NAIVE, CCML_MATMUL_TILED}) {
+          /* Over the cap the naive kernel is reported NOT_RUN, never timed. */
+          const bool skip = algo == CCML_MATMUL_NAIVE && options.naive_max_gflop > 0.0 &&
+                            gflop > options.naive_max_gflop;
+          candidates.push_back({"ccml", ccml_matmul_algo_name(algo), [&, algo, skip] {
+                                  return !skip &&
+                                         ccml_matmul_f32(c.data(), a.data(), b.data(), M,
+                                                         N, K, algo, stream) == CCML_SUCCESS;
+                                }});
+        }
+      }
+      if (options.wants("cublas")) {
+        candidates.push_back({"cublas", "sgemm", [&] {
+                                return cublas.sgemm(c.data(), a.data(), b.data(), M, N, K);
                               }});
       }
-      candidates.push_back({"cublas", "sgemm", [&] {
-                              return cublas.sgemm(c.data(), a.data(), b.data(), M, N, K);
-                            }});
-      const bool lt_ready = cublas.lt_prepare(M, N, K);
-      candidates.push_back({"cublaslt", "heuristic_top1", [&, lt_ready] {
-                              return lt_ready &&
-                                     cublas.lt_matmul(c.data(), a.data(), b.data());
-                            }});
+      if (options.wants("cublaslt")) {
+        const bool lt_ready = cublas.lt_prepare(M, N, K);
+        candidates.push_back({"cublaslt", "heuristic_top1", [&, lt_ready] {
+                                return lt_ready &&
+                                       cublas.lt_matmul(c.data(), a.data(), b.data());
+                              }});
+      }
 
       std::vector<Gated> gated;
       for (const Candidate& candidate : candidates) {

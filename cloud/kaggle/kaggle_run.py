@@ -1,27 +1,37 @@
-"""Build and test ccml on a free Kaggle GPU kernel.
+"""Run ccml's GPU work on Kaggle: one or several parallel sessions.
 
 Kaggle gives roughly 30 GPU-hours a week at no cost and needs no payment method.
 It is the GPU backend for all GPU work in this project (see docs/local.md for
 the exceptions).
 
-How the source gets there
--------------------------
-The whole repository is tarred, gzipped, base64-encoded and embedded directly in
-the generated kernel script -- about 60 KB. That avoids needing a GitHub push, a
-Kaggle Dataset upload, or internet access inside the kernel. The kernel unpacks
-itself and builds.
+Jobs (scripts/kaggle_job.sh defines what each one does)
+-------------------------------------------------------
+    sanitize                    ctest, Python helper tests, compute-sanitizer
+    matmul, layernorm, softmax  every implementation of one operator, C++ and
+                                Python, in one session on one GPU
+    all                         everything in a single session
+
+Each job is its own Kaggle kernel (slug ccml-<job>), so jobs run in parallel and
+wall time is the slowest job, not the sum. Jobs are split by operator, never by
+implementation, so every comparison table comes from one physical GPU.
 
 Usage
 -----
-    python cloud/kaggle/kaggle_run.py            # push, wait, fetch the log
-    python cloud/kaggle/kaggle_run.py --push     # push and return immediately
-    python cloud/kaggle/kaggle_run.py --fetch    # fetch the log of the last run
-    python cloud/kaggle/kaggle_run.py --no-gpu   # CPU kernel: compile check only
+    python cloud/kaggle/kaggle_run.py                       # all four jobs in parallel, wait, collect
+    python cloud/kaggle/kaggle_run.py --jobs matmul         # one job
+    python cloud/kaggle/kaggle_run.py --jobs matmul --impls ccml   # re-time only ccml
+    python cloud/kaggle/kaggle_run.py --push                # push and return
+    python cloud/kaggle/kaggle_run.py --fetch               # fetch and collect the jobs' outputs
+    python cloud/kaggle/kaggle_run.py --no-gpu --jobs build # CPU kernel: compile check only
+    python cloud/kaggle/kaggle_run.py --any-gpu             # do not pin the T4
 
-Credentials
------------
-Needs ~/.kaggle/kaggle.json from https://www.kaggle.com/settings ("API" section,
-"Create New Token"). See README.md in this directory.
+How the source gets there
+-------------------------
+The whole repository is tarred, gzipped, base64-encoded and embedded in the
+generated kernel script, with the commit id and the job name. No GitHub push,
+Dataset or internet access is needed inside the kernel.
+
+Credentials: ~/.kaggle/access_token (or kaggle.json). See README.md here.
 """
 
 from __future__ import annotations
@@ -40,18 +50,19 @@ import time
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 HERE = pathlib.Path(__file__).resolve().parent
-PUSH_DIR = HERE / "_build"
-OUTPUT_DIR = HERE / "_output"
+PUSH_ROOT = HERE / "_build"
+OUTPUT_ROOT = HERE / "_output"
 
-SLUG = "ccml-build"
+DEFAULT_JOBS = ["sanitize", "matmul", "layernorm", "softmax"]
+KNOWN_JOBS = set(DEFAULT_JOBS) | {"all", "build"}
 EXCLUDE_DIRS = {".git", "build", "out", "__pycache__", ".pytest_cache", ".vs",
-                # This script's own generated push dir and fetched output.
-                # Without these the payload packs a previous run's results and
-                # roughly doubles in size each time.
-                "_build", "_output"}
-# Kaggle rejects a push whose script is very large; 60 KB is nowhere near the
-# limit, but fail loudly rather than mysteriously if the repo grows.
+                ".venv", "_build", "_output"}
+# Kaggle rejects a very large script; fail loudly rather than mysteriously.
 MAX_PAYLOAD_BYTES = 800_000
+
+
+def slug(job: str) -> str:
+    return "ccml-" + job
 
 
 def config_dir() -> pathlib.Path:
@@ -105,18 +116,22 @@ def commit_id() -> str:
     return head + ("-dirty" if git("status", "--porcelain") else "")
 
 
-def build_payload() -> str:
+def _add_bytes(tar: tarfile.TarFile, name: str, data: bytes) -> None:
+    info = tarfile.TarInfo(name)
+    info.size = len(data)
+    tar.addfile(info, io.BytesIO(data))
+
+
+def build_payload(job: str, impls: str) -> str:
     """tar.gz the repository and base64 it for embedding in the kernel script."""
     buffer = io.BytesIO()
     file_count = 0
 
     with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
-        # The commit being measured, so every CSV row names it (the kernel has
-        # no .git). "-dirty" marks uncommitted changes in the working tree.
-        commit = commit_id().encode("utf-8")
-        info = tarfile.TarInfo(".ccml_commit")
-        info.size = len(commit)
-        tar.addfile(info, io.BytesIO(commit))
+        # What this session is: the commit being measured (the kernel has no
+        # .git; "-dirty" marks uncommitted changes), the job and its scope.
+        _add_bytes(tar, ".ccml_commit", commit_id().encode("utf-8"))
+        _add_bytes(tar, ".ccml_job", (job + " " + impls).encode("utf-8"))
         for root, dirs, files in os.walk(REPO_ROOT):
             dirs[:] = [d for d in dirs if d not in EXCLUDE_DIRS]
             for name in files:
@@ -127,10 +142,8 @@ def build_payload() -> str:
                 if full.suffix == ".sh":
                     # Shell scripts run under bash on Linux: strip any CRLF a
                     # Windows editor introduced, whatever the working copy has.
-                    data = full.read_bytes().replace(bytes([13, 10]), bytes([10]))
-                    info = tar.gettarinfo(str(full), arcname=relative)
-                    info.size = len(data)
-                    tar.addfile(info, io.BytesIO(data))
+                    _add_bytes(tar, relative,
+                               full.read_bytes().replace(bytes([13, 10]), bytes([10])))
                 else:
                     tar.add(full, arcname=relative)
                 file_count += 1
@@ -138,13 +151,10 @@ def build_payload() -> str:
     encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
     print("packed " + str(file_count) + " files into "
           + str(round(len(encoded) / 1024, 1)) + " KB of base64")
-
     if len(encoded) > MAX_PAYLOAD_BYTES:
-        raise SystemExit(
-            "payload is " + str(len(encoded)) + " bytes, over the "
-            + str(MAX_PAYLOAD_BYTES) + " byte guard. Add large files to "
-            "EXCLUDE_DIRS or switch to a Kaggle Dataset."
-        )
+        raise SystemExit("payload is " + str(len(encoded)) + " bytes, over the "
+                         + str(MAX_PAYLOAD_BYTES) + " byte guard. Add large files to "
+                         "EXCLUDE_DIRS or switch to a Kaggle Dataset.")
     return encoded
 
 
@@ -155,17 +165,16 @@ def render_kernel_script(payload: str) -> str:
     return template.replace("__CCML_PAYLOAD__", payload)
 
 
-def write_push_dir(username: str, use_gpu: bool, payload: str,
-                   pin_t4: bool = True) -> None:
-    shutil.rmtree(PUSH_DIR, ignore_errors=True)
-    PUSH_DIR.mkdir(parents=True)
-
-    (PUSH_DIR / "ccml_kaggle.py").write_text(
-        render_kernel_script(payload), encoding="utf-8")
-
+def write_push_dir(username: str, job: str, use_gpu: bool, payload: str,
+                   pin_t4: bool) -> pathlib.Path:
+    push_dir = PUSH_ROOT / job
+    shutil.rmtree(push_dir, ignore_errors=True)
+    push_dir.mkdir(parents=True)
+    (push_dir / "ccml_kaggle.py").write_text(render_kernel_script(payload),
+                                             encoding="utf-8")
     metadata = {
-        "id": username + "/" + SLUG,
-        "title": "ccml build",
+        "id": username + "/" + slug(job),
+        "title": "ccml " + job,
         "code_file": "ccml_kaggle.py",
         "language": "python",
         "kernel_type": "script",
@@ -173,123 +182,134 @@ def write_push_dir(username: str, use_gpu: bool, payload: str,
         "enable_gpu": use_gpu,
         # Always a T4 (sm_75): the project's benchmark target. Never a P100.
         **({"machine_shape": "NvidiaTeslaT4"} if use_gpu and pin_t4 else {}),
-        # No internet needed: the source is embedded and Kaggle's image already
-        # has the CUDA toolkit, numpy, pytest and torch.
+        # The image already has CUDA, CMake, Ninja, PyTorch, Triton and pynvml.
         "enable_internet": False,
         "dataset_sources": [],
         "competition_sources": [],
         "kernel_sources": [],
     }
-    (PUSH_DIR / "kernel-metadata.json").write_text(
-        json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
+    (push_dir / "kernel-metadata.json").write_text(json.dumps(metadata, indent=2) + "\n",
+                                                   encoding="utf-8")
+    return push_dir
 
 
-def kaggle(*args: str, check: bool = True) -> subprocess.CompletedProcess:
+def kaggle(*args: str, check: bool = True, quiet: bool = False) -> subprocess.CompletedProcess:
     command = [sys.executable, "-m", "kaggle"] + list(args)
-    completed = subprocess.run(
-        command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-    print(completed.stdout, end="")
+    completed = subprocess.run(command, stdout=subprocess.PIPE,
+                               stderr=subprocess.STDOUT, text=True)
+    if not quiet:
+        print("\n".join(line for line in completed.stdout.splitlines()
+                        if "outdated" not in line))
     if check and completed.returncode != 0:
         raise SystemExit("kaggle " + " ".join(args) + " failed")
     return completed
 
 
-def wait_for_completion(kernel_id: str, timeout_seconds: int = 6 * 3600) -> str:
-    """Poll until the kernel stops running. Returns the final status text."""
-    print("\nwaiting for the kernel to finish (Ctrl-C to stop waiting; the run "
-          "continues on Kaggle)")
-    deadline = time.time() + timeout_seconds
-    last = ""
-
-    while time.time() < deadline:
-        completed = kaggle("kernels", "status", kernel_id, check=False)
-        text = completed.stdout.strip()
-        if text != last:
-            print("  status: " + text)
-            last = text
-        lowered = text.lower()
-        if "complete" in lowered or "error" in lowered or "cancel" in lowered:
-            return text
-        time.sleep(20)
-
-    return "timed out after " + str(timeout_seconds) + "s: " + last
+def status_of(kernel_id: str) -> str:
+    out = kaggle("kernels", "status", kernel_id, check=False, quiet=True).stdout
+    lines = [l for l in out.strip().splitlines() if "outdated" not in l]
+    return lines[-1] if lines else "unknown"
 
 
-def fetch_output(kernel_id: str) -> None:
-    shutil.rmtree(OUTPUT_DIR, ignore_errors=True)
-    OUTPUT_DIR.mkdir(parents=True)
-    kaggle("kernels", "output", kernel_id, "-p", str(OUTPUT_DIR), check=False)
-
-    print("\n" + "#" * 72)
-    print("# KERNEL OUTPUT")
-    print("#" * 72)
-
-    collect_results()
-
-    log = OUTPUT_DIR / "ccml_build_log.txt"
-    if log.is_file():
-        text = log.read_text(encoding="utf-8", errors="replace")
-        print(text)
-        if "CCML_RUN_FAILED" in text:
-            raise SystemExit("the remote run failed; see the log above")
-        return
-
-    # Fall back to whatever Kaggle returned, usually <slug>.log as JSON records.
-    found = sorted(OUTPUT_DIR.glob("*.log")) + sorted(OUTPUT_DIR.glob("*.txt"))
-    if not found:
-        print("no output files retrieved; check "
-              "https://www.kaggle.com/code/" + kernel_id.replace("/", "/") )
-        return
-    for path in found:
-        print("--- " + path.name + " ---")
-        print(path.read_text(encoding="utf-8", errors="replace"))
+def is_finished(text: str) -> bool:
+    lowered = text.lower()
+    return any(word in lowered for word in ("complete", "error", "cancel"))
 
 
-def collect_results() -> None:
-    """Copy out/results/<arch>/ from the fetched output into the repository's
-    results/<arch>/, so a run's CSVs, peaks and sanitizer logs can be committed."""
-    fetched = OUTPUT_DIR / "out" / "results"
+def wait_for_all(kernel_ids: list[str], timeout_seconds: int = 6 * 3600) -> dict:
+    """Poll every session until all have stopped. Returns id -> final status."""
+    print("\nwaiting for " + str(len(kernel_ids)) + " session(s) (Ctrl-C stops "
+          "waiting; the runs continue on Kaggle)")
+    start = time.time()
+    last: dict = {}
+    while time.time() - start < timeout_seconds:
+        for kid in kernel_ids:
+            if kid in last and is_finished(last[kid]):
+                continue
+            text = status_of(kid)
+            if text != last.get(kid):
+                print("  [" + str(int(time.time() - start)) + "s] " + kid + ": "
+                      + text.split(".")[-1].strip('"'))
+                last[kid] = text
+        if all(is_finished(last.get(k, "")) for k in kernel_ids):
+            break
+        time.sleep(30)
+    return last
+
+
+def collect_results(output_dir: pathlib.Path) -> None:
+    """Copy out/results/<arch>/ from a session's output into the repository's
+    results/<arch>/, so its CSVs, peaks and sanitizer logs can be committed."""
+    fetched = output_dir / "out" / "results"
     if not fetched.is_dir():
         return
     for arch_dir in sorted(p for p in fetched.iterdir() if p.is_dir()):
         target = REPO_ROOT / "results" / arch_dir.name
         shutil.copytree(arch_dir, target, dirs_exist_ok=True)
-        print("collected " + str(sum(1 for _ in arch_dir.rglob("*"))) + " files into "
-              + str(target.relative_to(REPO_ROOT)))
+        print("collected " + str(sum(1 for _ in arch_dir.rglob("*") if _.is_file()))
+              + " files into " + str(target.relative_to(REPO_ROOT)))
+
+
+def fetch_output(job: str, kernel_id: str, show_log: bool) -> bool:
+    """Fetch one session's output, collect its results. Returns False on failure."""
+    output_dir = OUTPUT_ROOT / job
+    shutil.rmtree(output_dir, ignore_errors=True)
+    output_dir.mkdir(parents=True)
+    kaggle("kernels", "output", kernel_id, "-p", str(output_dir), check=False, quiet=True)
+    collect_results(output_dir)
+
+    log = output_dir / "ccml_build_log.txt"
+    if not log.is_file():
+        print(job + ": no log retrieved; see https://www.kaggle.com/code/" + kernel_id)
+        return False
+    text = log.read_text(encoding="utf-8", errors="replace")
+    if show_log:
+        print("\n" + "#" * 72 + "\n# " + job + "\n" + "#" * 72)
+        print(text)
+    failed = "CCML_RUN_FAILED" in text
+    print(job + ": " + ("FAILED (see " + str(log) + ")" if failed else "log at " + str(log)))
+    return not failed
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--push", action="store_true",
-                        help="push and exit without waiting")
-    parser.add_argument("--fetch", action="store_true",
-                        help="fetch the last run's output and exit")
+    parser = argparse.ArgumentParser(description=__doc__,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--jobs", default=",".join(DEFAULT_JOBS),
+                        help="comma list from: " + ", ".join(sorted(KNOWN_JOBS)))
+    parser.add_argument("--impls", default="all",
+                        help="limit re-measured implementations, e.g. ccml")
+    parser.add_argument("--push", action="store_true", help="push and exit without waiting")
+    parser.add_argument("--fetch", action="store_true", help="fetch outputs and exit")
+    parser.add_argument("--show-log", action="store_true", help="print each full log")
     parser.add_argument("--no-gpu", dest="gpu", action="store_false",
                         help="run on a CPU kernel: compile check only")
     parser.add_argument("--any-gpu", dest="pin_t4", action="store_false",
                         help="do not pin the T4; use if the T4 queue stalls")
     args = parser.parse_args()
 
+    jobs = [j.strip() for j in args.jobs.split(",") if j.strip()]
+    unknown = [j for j in jobs if j not in KNOWN_JOBS]
+    if unknown:
+        raise SystemExit("unknown job(s): " + ", ".join(unknown))
+
     username = kaggle_username()
-    kernel_id = username + "/" + SLUG
-    print("kernel: " + kernel_id)
+    ids = {job: username + "/" + slug(job) for job in jobs}
 
-    if args.fetch:
-        fetch_output(kernel_id)
-        return
+    if not args.fetch:
+        for job in jobs:
+            push_dir = write_push_dir(username, job, args.gpu,
+                                      build_payload(job, args.impls), args.pin_t4)
+            print(job + ": pushing " + ids[job])
+            kaggle("kernels", "push", "-p", str(push_dir))
+        if args.push:
+            print("\npushed. Fetch later with:\n    python cloud/kaggle/kaggle_run.py "
+                  "--fetch --jobs " + ",".join(jobs))
+            return
+        wait_for_all(list(ids.values()))
 
-    write_push_dir(username, args.gpu, build_payload(), args.pin_t4)
-    print("accelerator: " + ("GPU" if args.gpu else "none (CPU)"))
-    kaggle("kernels", "push", "-p", str(PUSH_DIR))
-
-    if args.push:
-        print("\npushed. Fetch results later with:\n"
-              "    python cloud/kaggle/kaggle_run.py --fetch")
-        return
-
-    status = wait_for_completion(kernel_id)
-    print("\nfinal status: " + status)
-    fetch_output(kernel_id)
+    ok = all([fetch_output(job, ids[job], args.show_log) for job in jobs])
+    if not ok:
+        raise SystemExit("one or more sessions failed; see the logs above")
 
 
 if __name__ == "__main__":

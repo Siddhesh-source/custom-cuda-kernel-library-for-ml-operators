@@ -14,7 +14,8 @@ namespace {
                "usage: [--shapes PATH] [--out PATH] [--peaks PATH] "
                "[--cache warm|cold|both] [--filter TEXT]\n"
                "       [--warmup N] [--max-iters N] [--min-iters N] "
-               "[--budget-ms X] [--rounds N]\n",
+               "[--budget-ms X] [--rounds N]\n"
+               "       [--impls a,b] [--naive-max-gflop X]\n",
                why);
   std::exit(2);
 }
@@ -46,6 +47,8 @@ Options parse_options(int argc, char** argv) {
     else if (arg == "--min-iters") o.timing.min_iters = std::atoi(value().c_str());
     else if (arg == "--budget-ms") o.timing.budget_ms = std::atof(value().c_str());
     else if (arg == "--rounds") o.timing.rounds = std::atoi(value().c_str());
+    else if (arg == "--impls") o.impls = value();
+    else if (arg == "--naive-max-gflop") o.naive_max_gflop = std::atof(value().c_str());
     else usage(("unknown argument " + arg).c_str());
   }
   if (o.timing.min_iters < 100) {
@@ -54,6 +57,11 @@ Options parse_options(int argc, char** argv) {
   if (o.timing.max_iters < o.timing.min_iters) o.timing.max_iters = o.timing.min_iters;
   if (o.shapes.empty()) usage("--shapes is required");
   return o;
+}
+
+bool Options::wants(const std::string& impl) const {
+  if (impls.empty() || impls == "all") return true;
+  return ("," + impls + ",").find("," + impl + ",") != std::string::npos;
 }
 
 Gated gate(const Candidate& candidate, const float* output, std::size_t count,

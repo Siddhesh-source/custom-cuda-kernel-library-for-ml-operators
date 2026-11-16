@@ -1,16 +1,31 @@
 #!/usr/bin/env bash
 # The work one Kaggle GPU session performs, after cloud/kaggle/kernel_template.py
-# has unpacked and built the repository. Batched into a single session to save
-# GPU quota (enhancement G5).
+# has unpacked and built the repository.
 #
-#   bash scripts/kaggle_job.sh SOURCE_DIR BUILD_DIR OUT_DIR
+#   bash scripts/kaggle_job.sh SOURCE_DIR BUILD_DIR OUT_DIR JOB [IMPLS]
 #
-# Everything under OUT_DIR/results/<arch>/ is copied back into the repository
-# by `python cloud/kaggle/kaggle_run.py --fetch`.
+# JOB is one of:
+#   sanitize                    ctest, Python helper tests, compute-sanitizer
+#   matmul | layernorm | softmax  every implementation of ONE operator, C++ and
+#                               Python, in this one session
+#   all                         everything, sequentially (one session)
+#
+# Splitting by operator, never by implementation, keeps every comparison in a
+# results table on one physical GPU in one session (reference.md §11: "always
+# compare on the same GPU, same dtype and same clocks"). Sessions run in
+# parallel; each records its own measured peaks.
+#
+# IMPLS limits what is re-measured in later phases (default: all), e.g.
+# "ccml" re-times only our kernels against the committed baselines.
+#
+# Everything under OUT_DIR/results/<arch>/ is copied back into the repository by
+# `python cloud/kaggle/kaggle_run.py --fetch`.
 set -u
 SRC="${1:?source dir}"
 BUILD="${2:?build dir}"
 OUT="${3:?output dir}"
+JOB="${4:-all}"
+IMPLS="${5:-all}"
 BIN="$BUILD/bin"
 export PATH="/usr/local/cuda/bin:$PATH"
 
@@ -18,41 +33,69 @@ cc=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader | head -1 | tr -d 
 ARCH="sm_${cc:-unknown}"
 RES="$OUT/results/$ARCH"
 mkdir -p "$RES" "$OUT/logs"
-step() { printf '\n######## %s\n' "$1"; }
+step() { printf '\n######## [%s] %s  (%s)\n' "$JOB" "$1" "$(date -u +%H:%M:%S)"; }
+has_impl() { [ "$IMPLS" = "all" ] || [[ ",$IMPLS," == *",$1,"* ]]; }
 
 step "environment"
 VENV=/tmp/ccml-venv   # outside /kaggle/working: a venv is not a result
-bash "$SRC/scripts/setup_env.sh" "$VENV" > "$RES/env.txt" 2>&1
-echo "setup_env exit $?"; cat "$RES/env.txt"
+bash "$SRC/scripts/setup_env.sh" "$VENV" > "$RES/env_$JOB.txt" 2>&1
+echo "setup_env exit $?"; cat "$RES/env_$JOB.txt"
 PY="$VENV/bin/python"; [ -x "$PY" ] || PY=python3
 
-step "correctness tests (ctest)"
-ctest --test-dir "$BUILD" --output-on-failure 2>&1 | tee "$RES/ctest.txt"
+run_sanitize() {
+  step "correctness tests (ctest)"
+  ctest --test-dir "$BUILD" --output-on-failure 2>&1 | tee "$RES/ctest.txt"
+  step "python measurement-helper tests"
+  "$PY" -m pytest "$SRC/scripts/tests" -q 2>&1 | tail -3 | tee "$RES/pytest_benchlib.txt"
+  step "ctypes binding tests (interim binding, until the cpp_extension replaces it)"
+  CCML_LIBRARY_PATH="$BUILD/lib/libccml.so" "$PY" -m pytest "$SRC/python/tests" -q 2>&1 \
+    | tail -3 | tee "$RES/pytest_binding.txt"
+  step "compute-sanitizer"
+  bash "$SRC/scripts/sanitize.sh" "$BIN" "$RES/sanitizer"
+  echo "sanitize exit $?"
+}
 
-step "python measurement-helper tests"
-"$PY" -m pytest "$SRC/scripts/tests" -q 2>&1 | tee "$RES/pytest_benchlib.txt"
+run_op() {
+  local op="$1" peaks="$RES/peaks_$1.json"
+  step "device peaks (this session's GPU)"
+  "$BIN/ccml_bench_peaks" --out "$peaks"
 
-step "ctypes binding tests (interim binding, until the cpp_extension replaces it)"
-CCML_LIBRARY_PATH="$BUILD/lib/libccml.so" "$PY" -m pytest "$SRC/python/tests" -q 2>&1 | tail -3 | tee "$RES/pytest_binding.txt"
+  if has_impl ccml || has_impl cublas || has_impl cudnn; then
+    step "C++ bench: $op"
+    local extra=()
+    # The naive matmul is ~20x slower than cuBLAS; above 5 GFLOP per call it
+    # adds tens of minutes and no information (rows say NOT_RUN).
+    [ "$op" = "matmul" ] && extra=(--naive-max-gflop 5)
+    [ "$IMPLS" != "all" ] && extra+=(--impls "$IMPLS")
+    "$BIN/ccml_bench_$op" --peaks "$peaks" --out "$RES/$op.csv" "${extra[@]}" \
+      2> "$OUT/logs/bench_$op.log"
+    echo "exit $?"; tail -3 "$OUT/logs/bench_$op.log"
+  fi
 
-step "compute-sanitizer"
-bash "$SRC/scripts/sanitize.sh" "$BIN" "$RES/sanitizer"
-echo "sanitize exit $?"
+  local py_impls=()
+  has_impl eager && py_impls+=(eager)
+  has_impl compile && py_impls+=(compile)
+  has_impl triton && py_impls+=(triton)
+  if [ ${#py_impls[@]} -gt 0 ]; then
+    # Matmul under max-autotune spends ~1 min per shape autotuning Triton
+    # templates; Inductor's default mode lowers mm to cuBLAS. Row-wise ops keep
+    # max-autotune, where generated kernels are the point of the baseline.
+    local mode=max-autotune
+    [ "$op" = "matmul" ] && mode=default
+    step "Python baselines: $op (${py_impls[*]}, compile mode $mode)"
+    "$PY" "$SRC/scripts/bench_torch.py" --out-dir "$RES" --peaks "$peaks" --ops "$op" \
+      --impls "$(IFS=,; echo "${py_impls[*]}")" --compile-mode "$mode" \
+      2> "$OUT/logs/bench_torch_$op.log"
+    echo "exit $?"; tail -5 "$OUT/logs/bench_torch_$op.log"
+  fi
+}
 
-step "device peaks"
-"$BIN/ccml_bench_peaks" --out "$RES/peaks.json"
-
-for op in matmul layernorm softmax; do
-  step "C++ bench: $op"
-  "$BIN/ccml_bench_$op" --peaks "$RES/peaks.json" --out "$RES/$op.csv" \
-    2> "$OUT/logs/bench_$op.log"
-  echo "exit $?"; tail -3 "$OUT/logs/bench_$op.log"
-done
-
-step "Python baselines: eager, torch.compile, Triton"
-"$PY" "$SRC/scripts/bench_torch.py" --out-dir "$RES" --peaks "$RES/peaks.json" \
-  2> "$OUT/logs/bench_torch.log"
-echo "exit $?"; tail -5 "$OUT/logs/bench_torch.log"
+case "$JOB" in
+  sanitize) run_sanitize ;;
+  matmul|layernorm|softmax) run_op "$JOB" ;;
+  all) run_sanitize; for op in matmul layernorm softmax; do run_op "$op"; done ;;
+  *) echo "unknown job: $JOB"; exit 2 ;;
+esac
 
 step "done"
 ls -la "$RES"

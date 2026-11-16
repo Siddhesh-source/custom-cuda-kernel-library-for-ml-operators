@@ -20,6 +20,9 @@ namespace ccml_bench {
  *   --cache warm|cold|both     (default both)
  *   --filter TEXT   only shapes whose tag contains TEXT
  *   --warmup N --max-iters N --min-iters N --budget-ms X --rounds N
+ *   --impls a,b     only these implementations (ccml, cublas, cublaslt, cudnn)
+ *   --naive-max-gflop X   matmul: skip the naive kernel above X GFLOP per call
+ *                   (its rows are reported NOT_RUN)
  */
 struct Options {
   std::string  shapes;
@@ -28,7 +31,11 @@ struct Options {
   std::string  filter;
   bool         warm = true;
   bool         cold = true;
+  std::string  impls;              /* empty = all */
+  double       naive_max_gflop = 0.0;  /* 0 = no limit */
   TimingConfig timing;
+
+  bool wants(const std::string& impl) const;
 };
 
 Options parse_options(int argc, char** argv);

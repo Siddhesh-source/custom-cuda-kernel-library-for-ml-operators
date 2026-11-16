@@ -55,6 +55,7 @@ int main(int argc, char** argv) {
 
       std::vector<Gated> gated;
       for (ccml_layernorm_algo algo : {CCML_LAYERNORM_TWO_PASS, CCML_LAYERNORM_WELFORD}) {
+        if (!options.wants("ccml")) break;
         const Candidate candidate{"ccml", ccml_layernorm_algo_name(algo), [&, algo] {
                                     return ccml_layernorm_f32(y.data(), x.data(),
                                                               gamma.data(), beta.data(),

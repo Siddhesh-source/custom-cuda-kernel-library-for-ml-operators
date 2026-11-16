@@ -49,12 +49,13 @@ int main(int argc, char** argv) {
       std::vector<Candidate> candidates;
       for (ccml_softmax_algo algo :
            {CCML_SOFTMAX_BLOCK_PER_ROW, CCML_SOFTMAX_WARP_PER_ROW}) {
+        if (!options.wants("ccml")) break;
         candidates.push_back({"ccml", ccml_softmax_algo_name(algo), [&, algo] {
                                 return ccml_softmax_f32(y.data(), x.data(), rows, cols,
                                                         algo, stream) == CCML_SUCCESS;
                               }});
       }
-      if (CudnnSoftmax::available()) {
+      if (CudnnSoftmax::available() && options.wants("cudnn")) {
         const bool ready = cudnn.prepare(rows, cols);
         candidates.push_back({"cudnn", "softmax_accurate_instance", [&, ready] {
                                 return ready && cudnn.run(y.data(), x.data());

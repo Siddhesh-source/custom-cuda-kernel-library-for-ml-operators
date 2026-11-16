@@ -21,6 +21,10 @@ in this directory.
 | 5 — PyTorch interface | [phase-5-pytorch-interface.md](phase-5-pytorch-interface.md) | 31/31 Python tests; zero-copy CUDA tensors on torch's stream |
 | 6 — Matmul + case study | [phase-6-case-study.md](phase-6-case-study.md) | All 3 operators correct; **2-11x slower than PyTorch**; matmul at 8.6% of fp32 peak |
 
+## Provenance note
+
+Phases 1-6 cite versions of the Kaggle kernel `isiddhesh3011/ccml-build`. That kernel was deleted on 2026-11-17: Kaggle has no cancel command, and deleting it was the only way to stop an obsolete run. The verbatim output of every cited version is preserved in these documents. From Phase 7 on, each job runs as its own kernel (`ccml-sanitize`, `ccml-matmul`, `ccml-layernorm`, `ccml-softmax`), and every CSV row records the commit it measured.
+
 ## What a results document must contain
 
 1. **Environment** — GPU, compute capability, driver, CUDA toolkit, compiler,
