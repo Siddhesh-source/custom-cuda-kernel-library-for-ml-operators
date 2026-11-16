@@ -11,8 +11,9 @@ Jobs (scripts/kaggle_job.sh defines what each one does)
                                 Python, in one session on one GPU
     all                         everything in a single session
 
-Each job is its own Kaggle kernel (slug ccml-<job>), so jobs run in parallel and
-wall time is the slowest job, not the sum. Jobs are split by operator, never by
+Each job is its own Kaggle kernel (slug ccml-<job>), so jobs run in parallel.
+Kaggle allows 2 concurrent GPU sessions on this account and rejects a push over
+the cap, so this script pushes as slots free up. Jobs are split by operator, never by
 implementation, so every comparison table comes from one physical GPU.
 
 Usage
@@ -216,27 +217,6 @@ def is_finished(text: str) -> bool:
     return any(word in lowered for word in ("complete", "error", "cancel"))
 
 
-def wait_for_all(kernel_ids: list[str], timeout_seconds: int = 6 * 3600) -> dict:
-    """Poll every session until all have stopped. Returns id -> final status."""
-    print("\nwaiting for " + str(len(kernel_ids)) + " session(s) (Ctrl-C stops "
-          "waiting; the runs continue on Kaggle)")
-    start = time.time()
-    last: dict = {}
-    while time.time() - start < timeout_seconds:
-        for kid in kernel_ids:
-            if kid in last and is_finished(last[kid]):
-                continue
-            text = status_of(kid)
-            if text != last.get(kid):
-                print("  [" + str(int(time.time() - start)) + "s] " + kid + ": "
-                      + text.split(".")[-1].strip('"'))
-                last[kid] = text
-        if all(is_finished(last.get(k, "")) for k in kernel_ids):
-            break
-        time.sleep(30)
-    return last
-
-
 def collect_results(output_dir: pathlib.Path) -> None:
     """Copy out/results/<arch>/ from a session's output into the repository's
     results/<arch>/, so its CSVs, peaks and sanitizer logs can be committed."""
@@ -271,6 +251,55 @@ def fetch_output(job: str, kernel_id: str, show_log: bool) -> bool:
     return not failed
 
 
+SESSION_CAP_MESSAGE = "Maximum batch GPU session count"
+
+
+def push_with_slots(username: str, jobs: list[str], ids: dict, args) -> list[str]:
+    """Push each job; Kaggle caps concurrent GPU sessions (2 on this account)
+    and REJECTS a push over the cap rather than queueing it. Returns the jobs
+    that were rejected for that reason, to be pushed when a slot frees."""
+    rejected = []
+    for job in jobs:
+        push_dir = write_push_dir(username, job, args.gpu,
+                                  build_payload(job, args.impls), args.pin_t4)
+        out = kaggle("kernels", "push", "-p", str(push_dir), check=False, quiet=True).stdout
+        if SESSION_CAP_MESSAGE in out:
+            print(job + ": GPU session cap reached; will push when a slot frees")
+            rejected.append(job)
+        elif "successfully pushed" in out:
+            print(job + ": pushed " + ids[job])
+        else:
+            raise SystemExit(job + ": push failed:\n" + out)
+    return rejected
+
+
+def schedule(username: str, pending: list[str], ids: dict, args,
+             timeout_seconds: int = 8 * 3600) -> None:
+    """Wait for running jobs; push pending ones as slots free; return when all
+    jobs have finished."""
+    start = time.time()
+    active = [j for j in ids if j not in pending]
+    last: dict = {}
+    while time.time() - start < timeout_seconds:
+        for job in active:
+            text = status_of(ids[job])
+            if text != last.get(job):
+                print("  [" + str(int(time.time() - start)) + "s] " + job + ": "
+                      + text.split(".")[-1].strip('"'))
+                last[job] = text
+        finished = [j for j in active if is_finished(last.get(j, ""))]
+        if pending and len(active) - len(finished) < 2:
+            pushed_now = [j for j in pending
+                          if j not in push_with_slots(username, [j], ids, args)]
+            for j in pushed_now:
+                pending.remove(j)
+                active.append(j)
+        if not pending and all(is_finished(last.get(j, "")) for j in active):
+            return
+        time.sleep(30)
+    print("timed out waiting; pending: " + ", ".join(pending))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -281,6 +310,8 @@ def main() -> None:
     parser.add_argument("--push", action="store_true", help="push and exit without waiting")
     parser.add_argument("--fetch", action="store_true", help="fetch outputs and exit")
     parser.add_argument("--show-log", action="store_true", help="print each full log")
+    parser.add_argument("--resume", action="store_true",
+                        help="attach to jobs already running instead of re-pushing them")
     parser.add_argument("--no-gpu", dest="gpu", action="store_false",
                         help="run on a CPU kernel: compile check only")
     parser.add_argument("--any-gpu", dest="pin_t4", action="store_false",
@@ -296,16 +327,23 @@ def main() -> None:
     ids = {job: username + "/" + slug(job) for job in jobs}
 
     if not args.fetch:
+        pending = []
         for job in jobs:
-            push_dir = write_push_dir(username, job, args.gpu,
-                                      build_payload(job, args.impls), args.pin_t4)
-            print(job + ": pushing " + ids[job])
-            kaggle("kernels", "push", "-p", str(push_dir))
+            # A job already running or queued (e.g. after a restart of this
+            # script) is waited on, not pushed a second time.
+            current = status_of(ids[job]).lower()
+            if args.resume and ("running" in current or "queued" in current):
+                print(job + ": already " + current.split(".")[-1].strip('"') + ", attaching")
+                continue
+            pending.append(job)
+        pending = push_with_slots(username, pending, ids, args)
         if args.push:
-            print("\npushed. Fetch later with:\n    python cloud/kaggle/kaggle_run.py "
+            if pending:
+                print("not pushed (GPU session cap): " + ", ".join(pending))
+            print("\nFetch later with:\n    python cloud/kaggle/kaggle_run.py "
                   "--fetch --jobs " + ",".join(jobs))
             return
-        wait_for_all(list(ids.values()))
+        schedule(username, pending, ids, args)
 
     ok = all([fetch_output(job, ids[job], args.show_log) for job in jobs])
     if not ok:
