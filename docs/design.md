@@ -1,11 +1,13 @@
 # Design
 
-Status: **skeleton**. Structure, public API and build are in place; no kernel
-bodies are written yet. Anything below marked TODO is genuinely not decided.
+Status: **living document**. It records the design rationale for every kernel
+variant. Scope and requirements come from [`reference.md`](reference.md), which
+is binding, and the plan is in [ROADMAP.md](ROADMAP.md).
 
 ## Scope
 
-Three operators, float32, row-major, contiguous:
+Three operators in FP32, FP16 and BF16 (FP32 accumulation), row-major and
+contiguous [reference.md §3]:
 
 | Operator | Signature | Header |
 |---|---|---|
@@ -13,9 +15,13 @@ Three operators, float32, row-major, contiguous:
 | Layer norm | over the last dimension, optional affine | `include/ccml/layernorm.h` |
 | Softmax | over the last dimension | `include/ccml/softmax.h` |
 
-Deliberately excluded: strides, transpose flags, broadcasting, alpha/beta
-accumulation, batching, dtypes other than float32. Each of these is easy to add
-later behind the same C ABI and impossible to remove once callers depend on it.
+Excluded because `reference.md` does not ask for them: strides, transpose
+flags, broadcasting, alpha/beta accumulation, backward passes. Each could be
+added later behind the same C ABI.
+
+Dtype entry points follow `ccml_<op>_<f32|f16|bf16>`. BF16 I/O works on every
+architecture. BF16 Tensor Core paths need sm_80+ and return
+`CCML_ERROR_NOT_IMPLEMENTED` below that.
 
 ## API shape and why
 
@@ -42,30 +48,16 @@ optimization pass touches exactly one file.
 
 ## Hardware the defaults are aimed at
 
-**These must come from a real run of `ccml_device_query`, not a specification
-sheet.** The target is the development GPU: an RTX 3050 A Laptop GPU (Ada,
-compute capability 8.9, ~4 GB VRAM, WDDM driver model).
+**Target: Tesla T4 on Kaggle (Turing, sm_75).** All GPU work runs there, and
+every tile size, block size and AUTO threshold is chosen from T4 measurements.
+The exceptions that need sm_80+ hardware are listed in [local.md](local.md).
 
-| Property | Measured value |
-|---|---|
-| SM count | TODO |
-| Max threads / block | TODO |
-| Max threads / SM | TODO |
-| Shared memory / block | TODO |
-| Shared memory / SM | TODO |
-| Registers / block | TODO |
-| L2 cache | TODO |
-| Memory bus width | TODO |
-| Theoretical peak bandwidth | TODO (ceiling only) |
+T4 constraints that shape the design: 1024 threads/SM, 64 KB shared memory/SM
+(48 KB per block by default), 4 MB L2, 320 GB/s theoretical bandwidth, FP16
+Tensor Cores (WMMA m16n16k16, `mma.sync` m16n8k8), **no `cp.async`** (so double
+buffering uses register prefetch), **no BF16 Tensor Cores**.
 
-Still TODO because the local machine cannot build (no Windows SDK), and the
-remote runs so far have been on a different GPU. Fill this in from either a
-local build or a Modal `CCML_GPU=L4` run, which is also Ada 8.9.
-
-The 4 GB of VRAM, roughly 2.9 GB of it free in practice, is the binding
-constraint on benchmark shapes.
-
-### Measured: Tesla T4 (Kaggle) — *not* the target
+### Measured: Tesla T4 (Kaggle)
 
 From `ccml_device_query` on a Kaggle kernel, 2026-09-23. Recorded because it is
 real measured data, and because the contrast with the target matters.
@@ -85,18 +77,6 @@ real measured data, and because the contrast with the target matters.
 | Memory clock | 5001 MHz |
 | SM clock | 1590 MHz |
 | Theoretical peak bandwidth | 320.1 GB/s (ceiling, never achieved) |
-
-**Do not tune against these numbers.** Turing differs from the Ada target in
-ways that change every decision in this document: no async shared-memory copy
-(`cp.async`, sm_80+), a different shared-memory and L1 split, different warp
-scheduling, and 1024 max threads per SM against Ada's 1536. A tile size or block
-size chosen here would not transfer. Kaggle is for correctness; use Modal with
-`CCML_GPU=L4` for anything performance related.
-
-One figure worth carrying over as a *method* rather than a value: 14.56 GiB of
-VRAM on the T4 against roughly 2.9 GB free on the development GPU. Benchmark
-shapes that fit comfortably on a remote worker can be impossible locally, so
-shape selection must be driven by the smaller device.
 
 ## Matrix multiplication
 
@@ -204,9 +184,10 @@ Measured results: [results/phase-3-softmax.md](results/phase-3-softmax.md).
 
 ## Open questions
 
-1. **Target shapes.** Unknown. Tiling, block sizes and the softmax row strategy
-   all depend on them. Current defaults are placeholders, and are documented as
-   such rather than presented as tuned.
-2. **Whether fp16 / bf16 input is in scope** for the sponsor. It is not
-   currently, and the API would need a dtype parameter or parallel entry points.
-3. **Whether backward passes are in scope.** Currently not.
+All of these are settled by measurement on the T4 (see ROADMAP §1 and §3):
+
+1. Does layernorm's fp64 accumulation cost measurable time against fp32 Welford?
+2. What arithmetic intensity does register blocking actually reach?
+3. Below what row width does warp-per-row softmax or layernorm win?
+4. Where should AUTO switch between variants, per dtype and shape bucket?
+5. On which skinny (decode) shapes does split-K or stream-K beat cuBLAS?

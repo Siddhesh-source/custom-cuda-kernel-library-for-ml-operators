@@ -1,77 +1,94 @@
 # Benchmarking
 
-Status: **skeleton**. The timing harness exists. **No performance measurement
-has been taken, and no performance claim is supported by anything in this
-repository.**
+This is the measurement method. It implements the "Benchmarking method" section
+and §3, §4, §6 and §11 of [`reference.md`](reference.md). The extra rigor
+measures (M1–M7) are described in [enhancements.md](enhancements.md).
 
-Read that again before quoting anything from this project in a report.
+**State on 2026-11-16:** the harness in `bench/` predates this method. It
+reports the mean over 50 samples and has no throughput columns. Bringing it to
+this standard is Phase 7 ([ROADMAP.md](ROADMAP.md)). Until then, no number from
+`bench/` may be reported.
 
-## What exists
+## Where it runs
 
-`bench/` builds three executables that emit CSV on stdout:
+On a **Kaggle Tesla T4 (sm_75)**, through `cloud/kaggle/kaggle_run.py`, with
+the machine shape pinned to T4. Every row records the GPU, compute capability,
+driver, CUDA version, SM and memory clocks, temperature and throttle reasons.
+Clocks cannot be locked on Kaggle (`nvidia-smi -lgc` is denied, as measured by
+the probe on 2026-11-16). The harness therefore records clocks per row and
+flags throttled samples, rather than assuming the clocks are fixed.
 
-    build/default/bin/ccml_bench_matmul
-    build/default/bin/ccml_bench_layernorm
-    build/default/bin/ccml_bench_softmax
+## Rules [reference.md, Method]
 
-Each prints a header recording the device, library version and build stamp, then
-one row per (operator, algorithm, shape):
+1. **Correctness first.** The harness runs the correctness check for a kernel
+   and shape in the same process before timing it, and refuses to time a kernel
+   that fails (M7).
+2. **CUDA events.** Warmup is at least 20 launches, then at least 100 timed
+   iterations (default 200), each bracketed by events. Wall-clock time without
+   synchronization is never used.
+3. **Statistics.** Report the median, p10, p90, IQR and min, plus a bootstrap
+   95% CI on the median (M1).
+4. **Identical conditions.** Same GPU, dtype, shapes and session for everything
+   in one comparison. Variants run interleaved A/B/A/B to cancel drift (M3).
+   The harness checks that no other process is on the GPU (M4).
+5. **Cold and warm L2.** Both are reported. Cold flushes L2 before each
+   iteration by writing a buffer larger than L2 (M2).
+6. **Percent of peak.** TFLOPS for matmul, GB/s for row-wise ops. Each is given
+   as a percentage of the theoretical peak and of the measured peak
+   (`results/sm_75/peaks.json`, M5).
+7. **Every CUDA call is checked**, and `cudaGetLastError` follows every launch.
 
-    op,algo,shape,samples,mean_ms,min_ms,max_ms,stddev_ms
+## Event-timing pattern (from the spec)
 
-Rows with an empty `mean_ms` mean the work did not run - almost always because
-the kernel is not implemented. A missing timing is reported as missing rather
-than as zero, since a zero would read as an extraordinarily fast kernel.
+```cpp
+cudaEvent_t a, b; cudaEventCreate(&a); cudaEventCreate(&b);
+for (int i = 0; i < WARMUP; ++i) kernel<<<g, blk>>>(args);
+cudaEventRecord(a);
+for (int i = 0; i < ITERS; ++i) kernel<<<g, blk>>>(args);
+cudaEventRecord(b); cudaEventSynchronize(b);
+float ms; cudaEventElapsedTime(&ms, a, b);   // per-iter = ms / ITERS
+```
 
-## Method
+This batched form gives the mean per iteration. To get the median and spread,
+the harness also records one event pair per iteration and computes the
+distribution from those. Both forms are kept so they can be cross-checked.
 
-**CUDA events, not a host clock.** On the Windows WDDM driver model the OS
-batches command submission, so a host-side wall clock around a launch can report
-almost anything. Event timestamps are recorded in the stream itself.
+## Baselines [reference.md §4]
 
-**Warmup is discarded.** The first launch pays module load and JIT, and the GPU
-clocks are still ramping. Ten warmup iterations, then fifty samples.
+| Baseline | Where |
+|---|---|
+| Naive CUDA kernel | `algo = NAIVE` in the same harness |
+| PyTorch eager | `scripts/bench_torch.py` |
+| cuBLAS / cuDNN | `bench/` C++, linked only into benchmarks, never into `src/` |
+| torch.compile (Inductor) | `scripts/bench_torch.py`, `mode="max-autotune"` |
+| Triton (extra, B1) | `scripts/bench_torch.py` |
+| Our best kernel per shape | AUTO dispatch from the tuning table |
 
-**Spread is reported, not just the mean.** `min`, `max` and `stddev` are in every
-row. A mean without a spread hides thermal throttling, which a 60 W laptop GPU
-does under sustained load.
+## Metrics [reference.md §6]
 
-## What is deliberately absent
+Latency (µs) · TFLOPS and %peak (matmul) · GB/s and %peak bandwidth
+(layernorm, softmax) · speedup against each baseline · max abs and rel error ·
+Nsight Compute: achieved occupancy, memory throughput, warp stall reasons.
 
-**Derived figures.** No GFLOP/s, no achieved bandwidth, no ratios. Those are
-analysis and belong in this document next to the conditions they were measured
-under. Emitting them from the harness makes it far too easy for a number with no
-provenance to end up in a report.
+**FLOP and byte counts** (the minimum required traffic, so that %peak is never
+inflated):
+- matmul: `2·M·N·K` FLOPs; bytes = `(M·K + K·N + M·N)·sizeof(T)`
+- layernorm: bytes = `(2·rows·cols + 2·cols)·sizeof(T)`, plus a residual read when fused
+- softmax: bytes = `2·rows·cols·sizeof(T)`, plus a mask read when fused
 
-**cuBLAS and cuDNN comparison.** Out of scope at this milestone. cuBLAS is
-available in the local toolkit; cuDNN is not installed. When that work happens it
-goes in `bench/`, never in `src/` - the library itself must keep depending only
-on the CUDA runtime.
+## CSV schema
 
-**Autotuning.** Not started. Tile dimensions and block sizes in `src/` are
-provisional defaults, documented as such in `design.md`.
+`results/sm_75/<op>.csv`, one row per (op, algo, dtype, shape, baseline, cache state):
 
-## Constraints on this machine
+```
+op,impl,algo,dtype,M,N,K,rows,cols,cache,iters,median_us,p10_us,p90_us,iqr_us,min_us,ci95_lo_us,ci95_hi_us,tflops,gbps,pct_peak_theory,pct_peak_measured,max_abs_err,max_rel_err,sm_clock_mhz,mem_clock_mhz,temp_c,throttled,gpu,cc,driver,cuda,commit
+```
 
-The development GPU has 4 GB of VRAM with roughly 2.9 GB free in practice, and
-the desktop compositor is sharing it. Consequences:
+An empty timing cell means the work did not run. It is never written as zero.
 
-- Benchmark shapes must stay small. The current largest matmul shape is
-  1024x1024x1024, which is about 12 MB of tensors.
-- Another application taking VRAM changes the result. Record what else was
-  running.
-- The GPU is in WDDM mode, so it is also driving a display. Measurements taken
-  while the desktop is busy are not comparable to ones taken while it is idle.
+## Profiling [reference.md, Method and §9]
 
-## Recording a run
-
-When results are eventually taken, save the CSV under `docs/results/` with the
-date and machine in the filename, and note in this document:
-
-- driver version and CUDA toolkit version
-- build type and the exact CMake preset
-- what else was using the GPU
-- GPU temperature and clock behaviour over the run, if throttling is suspected
-
-A benchmark number without those conditions attached is not reproducible and
-should not be reported.
+Nsight Systems is used for timelines and Nsight Compute for kernel metrics.
+Only small reports are committed, under `profiles/`. Nsight Systems runs on
+Kaggle. Nsight Compute counters are blocked there (`ERR_NVGPUCTRPERM`), so NCU
+runs locally as described in [local.md](local.md) L3.

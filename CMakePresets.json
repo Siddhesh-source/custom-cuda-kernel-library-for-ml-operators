@@ -8,22 +8,22 @@
   "configurePresets": [
     {
       "name": "default",
-      "displayName": "Release, sm_89, Ninja",
+      "displayName": "Release, sm_75 (Kaggle T4), Ninja",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/default",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
-        "CCML_CUDA_ARCHITECTURES": "89"
+        "CCML_CUDA_ARCHITECTURES": "75"
       }
     },
     {
       "name": "debug",
-      "displayName": "Debug, sm_89, Ninja (device debug info; use for compute-sanitizer)",
+      "displayName": "Debug, sm_75 (Kaggle T4), Ninja (device debug info; use for compute-sanitizer)",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/debug",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
-        "CCML_CUDA_ARCHITECTURES": "89"
+        "CCML_CUDA_ARCHITECTURES": "75"
       }
     }
   ],

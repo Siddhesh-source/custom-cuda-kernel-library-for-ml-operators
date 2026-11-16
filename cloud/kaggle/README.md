@@ -1,8 +1,8 @@
 # Remote build and test on Kaggle
 
 Kaggle gives roughly 30 GPU-hours per week at no cost and needs **no payment
-method**, which is why this path exists alongside `../modal_app.py` — Modal
-refuses every GPU type, T4 included, until a card is on file.
+method**. It is the backend for all GPU work in this project; the few
+exceptions are listed in [`../../docs/local.md`](../../docs/local.md).
 
 ## Credentials
 
@@ -75,19 +75,22 @@ script adapts:
 - **architecture** — detected from `nvidia-smi` at runtime rather than assumed,
   so it is correct whether Kaggle hands out a P100 (sm_60) or a T4 (sm_75).
 
-## Architecture caveat
+## Target GPU: Tesla T4 (sm_75)
 
-Kaggle's GPUs are **P100 (sm_60)** or **T4 x2 (sm_75)**. The development GPU is
-**Ada (sm_89)**.
+The kernel metadata requests `machine_shape: NvidiaTeslaT4`, so every run gets
+a T4 rather than a P100. The T4 is the **benchmark and tuning target** for this
+project. All tile sizes, block sizes and AUTO thresholds are chosen from T4
+measurements.
 
-That is fine for **correctness**, which is all this milestone needs. It is *not*
-fine for tuning: Pascal and Turing both lack async shared-memory copies
-(`cp.async`, sm_80+), and differ from Ada in shared memory and L1 split, warp
-scheduling and occupancy limits. A tile size chosen from a T4 measurement says
-nothing about the Ada target.
+What the T4 cannot do, as measured by a probe run on 2026-11-16: native BF16
+Tensor Cores and `cp.async` (both need sm_80+), and clock locking
+(`nvidia-smi -lgc` is denied). Nsight Compute counters are blocked
+(`ERR_NVGPUCTRPERM`), so NCU is a local item in [`../../docs/local.md`](../../docs/local.md).
+compute-sanitizer and Nsight Systems work.
 
-For anything performance related, use Modal with `CCML_GPU=L4` — L4 is Ada 8.9,
-matching the development machine.
+If the T4 pin leaves a run `QUEUED` for more than about 10 minutes, cancel it
+and push with `--any-gpu`. The log records which GPU actually ran. BF16 *correctness* (with FP32 math)
+does run on the T4.
 
 ## Getting the log
 

@@ -327,7 +327,7 @@ memory. A block using a lot of shared memory means fewer blocks fit per SM.
 
 This is a real trade-off, not free: bigger tiles give better arithmetic
 intensity but use more shared memory and lower occupancy. Finding the balance is
-what autotuning is for — and is deliberately out of scope for now.
+what autotuning is for. The roadmap sweeps it in phase 15, and enhancement S4 turns the result into a measured dispatch table.
 
 ---
 
@@ -929,4 +929,4 @@ never accidentally measure a different kernel than it named.
 * [results/](results/README.md) — what every phase actually measured
 * [results/phase-6-case-study.md](results/phase-6-case-study.md) — the
   performance analysis that section 4 is the theory for
-* [project-vision.md](project-vision.md) — what this becomes when it is finished
+* [PROJECT_OVERVIEW.md](PROJECT_OVERVIEW.md) and [ROADMAP.md](ROADMAP.md) — what this becomes when it is finished

@@ -20,9 +20,9 @@ option(CCML_WARNINGS_AS_ERRORS "Treat compiler warnings as errors"  OFF)
 option(CCML_SYNC_LAUNCH_CHECKS
        "Synchronise after every kernel launch (forced on in Debug)" OFF)
 
-# Default target is sm_89 (Ada; RTX 3050 A Laptop GPU on the dev machine).
-# Override with -DCCML_CUDA_ARCHITECTURES=86 etc.
-set(CCML_CUDA_ARCHITECTURES "89" CACHE STRING
+# Default target is sm_75 (Tesla T4 on Kaggle: the benchmark target).
+# Override with -DCCML_CUDA_ARCHITECTURES=89 etc. for a local GPU.
+set(CCML_CUDA_ARCHITECTURES "75" CACHE STRING
     "CUDA architectures to compile device code for")
 
 # The Python ctypes binding loads a shared library, so shared is the default.

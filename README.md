@@ -51,17 +51,18 @@ Each suite runs independently:
     ctest --preset default -R softmax
     build/default/bin/ccml_test_softmax large_positive
 
-The default preset targets `sm_89`. For another GPU:
+The default preset targets `sm_75`, the Kaggle Tesla T4 that is this project's
+GPU target. For another GPU:
 
-    cmake -B build/mygpu -G Ninja -DCCML_CUDA_ARCHITECTURES=75
+    cmake -B build/mygpu -G Ninja -DCCML_CUDA_ARCHITECTURES=89
     cmake --build build/mygpu
 
-Requires CMake 3.25+, a CUDA toolkit, and a host compiler. On Windows, see the
-Windows SDK note in [docs/build.md](docs/build.md) — it is currently the reason
-this does not build on the development machine.
+**All GPU work runs on Kaggle:**
 
-No local GPU? [`cloud/`](cloud/README.md) builds and tests on a free Kaggle GPU
-or on Modal.
+    python cloud/kaggle/kaggle_run.py
+
+See [`cloud/`](cloud/README.md). The few components that need a local GPU are
+listed in [docs/local.md](docs/local.md).
 
 ## Usage
 
@@ -141,9 +142,11 @@ of rules is in [`include/ccml/types.h`](include/ccml/types.h).
 | `support/` | Device buffers, RNG, RAII streams and events — shared by tests and benchmarks |
 | `tests/` | Correctness, one executable per suite. No timing |
 | `bench/` | Timing. No assertions, not registered with CTest |
-| `python/` | Optional ctypes binding. No build-system edge to the C++ |
+| `python/` | PyTorch extension (`torch.utils.cpp_extension`, Phase 14); interim ctypes binding |
 | `examples/` | Public-API-only consumers |
-| `cloud/` | Remote build and test, for when there is no local GPU |
+| `cloud/` | Kaggle runner: all GPU builds, tests, benchmarks and profiling |
+| `profiles/` | Small Nsight Compute / Nsight Systems reports |
+| `scripts/` | Setup, sanitizer, sweeps, roofline, remote runs |
 | `docs/` | Design rationale, correctness evidence, per-phase results |
 
 Rules the layout enforces: the library depends on nothing but the CUDA runtime;
@@ -164,17 +167,14 @@ and shared device utilities live in `src/common/`, not copied between operators.
   from nothing, with small examples. Written for someone who knows C++ but has
   never written a GPU kernel. Each idea is tied to a file or a measurement from
   this repository.
-- [Project vision](docs/project-vision.md) — what the finished library looks
-  like, the roadmap to get there, and what "complete" means as an auditable
-  checklist.
 
 **Reference:**
 
 - [Design](docs/design.md) — algorithm choices and the reasoning behind them
 - [Correctness](docs/correctness.md) — method, tolerance policy, measured errors
-- [Benchmarking](docs/benchmarking.md) — timing method, and what is deliberately absent
+- [Benchmarking](docs/benchmarking.md) — measurement method, baselines, CSV schema
 - [Build](docs/build.md) — requirements, options, troubleshooting
-- [Milestone status](docs/milestone-40.md) — what is done and what is not
+- [Local GPU components](docs/local.md) — the only items that cannot run on Kaggle
 - [Phase results](docs/results/README.md) — measured output from each phase
 
 Every phase ends with tests under `tests/` and a results document under

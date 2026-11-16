@@ -96,20 +96,10 @@ Tests skip rather than fail when the library is not built, when no CUDA device
 is present, or when an operator has no kernel behind it. A skip is not a pass —
 read the summary line.
 
-## Why ctypes rather than torch.utils.cpp_extension
+## Status: interim binding
 
-`cpp_extension` is the conventional route, but it needs a compiler and a
-CUDA-enabled PyTorch whose CUDA version matches the local toolkit **at import
-time**. The development machine has PyTorch 2.1.1+cpu and cannot compile CUDA at
-all, so that route cannot even be attempted here; and on any machine it adds a
-second build system beside the CMake one.
-
-The library already exposes a flat C ABI taking device pointers, and a tensor's
-`data_ptr()` is exactly such a pointer. So the binding needs no compiler, no
-second build, and no copy — it exercises the same ABI any other language binding
-would use.
-
-What this costs: **no autograd**, and no integration with the PyTorch
-dispatcher. Neither is in scope at this milestone. If a backward pass is ever
-needed, a `cpp_extension` wrapper can be added over the same C ABI without
-touching any CUDA code.
+`reference.md` §3 requires a **`torch.utils.cpp_extension`** extension. That is
+Phase 14 in [ROADMAP.md](../docs/ROADMAP.md), and it builds on Kaggle, which has a
+CUDA PyTorch whose CUDA version matches the toolkit. This ctypes binding remains
+only until the extension reaches parity: the case study and the current pytest
+suite depend on it. It is **deleted** once the extension passes the same tests.

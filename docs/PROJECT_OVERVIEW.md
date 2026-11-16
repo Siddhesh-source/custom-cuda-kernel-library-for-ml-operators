@@ -54,11 +54,10 @@ achieved occupancy, memory throughput and warp stall reasons.
 
 | | Arch | Role |
 |---|---|---|
-| RTX 3050 A Laptop (local) | Ada sm_89, 4 GB | Primary: final numbers, NCU, BF16 |
-| Kaggle T4 | Turing sm_75 | Correctness, FP16 Tensor Cores |
-| Modal L4 | Ada sm_89 | Fallback |
+| **Kaggle T4** | Turing sm_75, 15 GB | **All GPU work**: build, tests, sanitizer, benchmarks, FP16 Tensor Cores, extension, model. The benchmark target |
+| Local GPU | sm_80+ | Only the items in [local.md](local.md) |
 
-Numbers from different architectures are never mixed.
+Results go in `results/sm_75/`. Numbers from different architectures are never mixed.
 
 ## Repository layout [R§7]
 
@@ -71,10 +70,10 @@ Numbers from different architectures are never mixed.
 | `bench/` | Harness, `shapes.json`, vendor baselines, CSV writer |
 | `tests/` | Correctness against references; no timing |
 | `profiles/` | Small `.ncu-rep` / `.nsys-rep` files, committed |
-| `results/<arch>/` | Raw CSVs, peaks, sanitizer logs, plots |
+| `results/sm_75/` | Raw CSVs, peaks, sanitizer logs, plots |
 | `scripts/` | Environment setup, sanitizer, profiling, sweeps, roofline, remote runs |
 | `docs/` | Specification, roadmap, design, per-phase results, optimization log, report |
-| `cloud/` | Kaggle and Modal runners |
+| `cloud/` | Kaggle runner: every GPU job |
 
 ## Non-negotiables [R§11, R Method]
 

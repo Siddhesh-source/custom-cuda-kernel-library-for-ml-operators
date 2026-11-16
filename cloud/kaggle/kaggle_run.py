@@ -1,7 +1,8 @@
 """Build and test ccml on a free Kaggle GPU kernel.
 
-Kaggle gives roughly 30 GPU-hours a week at no cost and needs no payment method,
-which is why this exists alongside the Modal path in ../modal_app.py.
+Kaggle gives roughly 30 GPU-hours a week at no cost and needs no payment method.
+It is the GPU backend for all GPU work in this project (see docs/local.md for
+the exceptions).
 
 How the source gets there
 -------------------------
@@ -132,7 +133,8 @@ def render_kernel_script(payload: str) -> str:
     return template.replace("__CCML_PAYLOAD__", payload)
 
 
-def write_push_dir(username: str, use_gpu: bool, payload: str) -> None:
+def write_push_dir(username: str, use_gpu: bool, payload: str,
+                   pin_t4: bool = True) -> None:
     shutil.rmtree(PUSH_DIR, ignore_errors=True)
     PUSH_DIR.mkdir(parents=True)
 
@@ -147,6 +149,8 @@ def write_push_dir(username: str, use_gpu: bool, payload: str) -> None:
         "kernel_type": "script",
         "is_private": True,
         "enable_gpu": use_gpu,
+        # Always a T4 (sm_75): the project's benchmark target. Never a P100.
+        **({"machine_shape": "NvidiaTeslaT4"} if use_gpu and pin_t4 else {}),
         # No internet needed: the source is embedded and Kaggle's image already
         # has the CUDA toolkit, numpy, pytest and torch.
         "enable_internet": False,
@@ -225,6 +229,8 @@ def main() -> None:
                         help="fetch the last run's output and exit")
     parser.add_argument("--no-gpu", dest="gpu", action="store_false",
                         help="run on a CPU kernel: compile check only")
+    parser.add_argument("--any-gpu", dest="pin_t4", action="store_false",
+                        help="do not pin the T4; use if the T4 queue stalls")
     args = parser.parse_args()
 
     username = kaggle_username()
@@ -235,7 +241,7 @@ def main() -> None:
         fetch_output(kernel_id)
         return
 
-    write_push_dir(username, args.gpu, build_payload())
+    write_push_dir(username, args.gpu, build_payload(), args.pin_t4)
     print("accelerator: " + ("GPU" if args.gpu else "none (CPU)"))
     kaggle("kernels", "push", "-p", str(PUSH_DIR))
 

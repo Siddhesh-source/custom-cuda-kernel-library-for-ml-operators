@@ -44,4 +44,4 @@ in this directory.
 - **No performance claims** without a committed, rerunnable script and its
   output. Timing taken on borrowed hardware records which hardware.
 - **Record the architecture.** Results from Turing (Kaggle T4) do not transfer
-  to the Ada target; saying so in each document keeps that from being forgotten.
+  to any other architecture; saying so in each document keeps that from being forgotten.

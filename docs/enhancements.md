@@ -27,10 +27,10 @@ IDs are re`ferenced from [ROADMAP.md](ROADMAP.md).
 | **G2** | **Multi-stream overlap.** Run independent ops (the Q/K/V projections, or two microbatches) on separate streams joined by events. Measure the overlap with nsys | Small kernels leave SMs idle; concurrency fills them | bench, demo |
 | **G3** | **L2 persistence window** (`cudaAccessPolicyWindow`) for weights reused across calls | Keeps hot weights in L2 between layers. Measure warm and cold | matmul |
 | **G4** | **Occupancy-aware launch.** Use `cudaOccupancyMaxActiveBlocksPerMultiprocessor` and `__launch_bounds__` variants, with the register cap swept | This *is* the spec's experiment "occupancy vs register usage" [R§5], run systematically | all |
-| **G5** | **Remote job queue.** `scripts/run_remote.py` dispatches a phase to Kaggle (sm_75) or Modal (sm_89) and tags the results with the architecture | Correctness and performance runs stay separated by architecture and reproducible | cloud |
+| **G5** | **Remote job queue.** `scripts/run_remote.py` dispatches a phase to Kaggle T4 (sm_75), batches build, test, sanitize, bench and profile into one kernel run to save quota, and tags the results with the architecture | Correctness and performance runs stay separated by architecture and reproducible | cloud |
 
 Excluded: Programmatic Dependent Launch, TMA and wgmma all need sm_90 and
-cannot run on the Ada target.
+cannot run on the T4 target.
 
 ## F — Fusion
 
@@ -47,9 +47,9 @@ cannot run on the Ada target.
 |---|---|---|
 | **M1** | Report median with a **bootstrap 95% CI**, plus p10/p90/IQR, over ≥100 iterations (default 200) | The spec asks for median and spread [R Method]. The CI makes "A beats B" a statistical claim |
 | **M2** | **Cold and warm L2.** Flush L2 between iterations with a write to a buffer larger than L2, and report both | Small shapes fit entirely in L2. Without a flush, vendor and ours can both look unrealistically fast |
-| **M3** | Thermal and clock guard: log SM clock, memory clock, temperature and throttle reasons through NVML for each run; lock clocks where permitted (`nvidia-smi -lgc`); **interleave A/B/A/B** variant order; flag runs that throttled | The spec requires same clocks and watching throttling [R Method, R§11]. Laptop GPUs drift |
+| **M3** | Thermal and clock guard: log SM clock, memory clock, temperature and throttle reasons through NVML for each run; clocks cannot be locked on Kaggle (`nvidia-smi -lgc` denied), so they are recorded instead; **interleave A/B/A/B** variant order; flag runs that throttled | The spec requires same clocks and watching throttling [R Method, R§11]. Shared cloud GPUs drift |
 | **M4** | Check that no other process is on the GPU before a run (NVML process list) | The spec says to watch for other processes [R Method] |
-| **M5** | **Measured peaks**: FMA-throughput and STREAM-copy microbenchmarks, plus theoretical peaks. Report %peak against both | Without these, "% of peak" is relative to a spec sheet the laptop never reaches |
+| **M5** | **Measured peaks**: FMA-throughput and STREAM-copy microbenchmarks, plus theoretical peaks. Report %peak against both | Without these, "% of peak" is relative to a spec sheet the T4 never reaches |
 | **M6** | **Regression gate**: `scripts/compare.py` fails when a median regresses by more than 3% with non-overlapping CIs | Stops an optimization from quietly breaking another shape |
 | **M7** | The harness **refuses to time a kernel that has not passed its correctness check** in the same run | Enforces [R§11] in code rather than relying on discipline |
 

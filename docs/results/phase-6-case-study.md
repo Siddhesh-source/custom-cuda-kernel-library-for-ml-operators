@@ -5,8 +5,8 @@
 slower than PyTorch on every shape measured** — between 2x and 11x.
 **This is the project's first performance measurement of any kind.**
 
-Generated artifacts: [`results/case_study_results.csv`](../../results/case_study_results.csv),
-[`results/case_study_summary.md`](../../results/case_study_summary.md).
+Generated artifacts: [`results/sm_75/case_study_results.csv`](../../results/sm_75/case_study_results.csv),
+[`results/sm_75/case_study_summary.md`](../../results/sm_75/case_study_summary.md).
 
 ## Environment
 

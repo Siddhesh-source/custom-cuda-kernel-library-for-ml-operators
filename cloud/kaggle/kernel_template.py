@@ -27,9 +27,9 @@ SOURCE = os.path.join(SCRATCH, "src")
 BUILD = os.path.join(SCRATCH, "build")
 LOG_PATH = os.path.join(WORK, "ccml_build_log.txt")
 
-# Fallback when no GPU is attached. Matches the development machine, so the
+# Fallback when no GPU is attached. Matches the Kaggle T4 benchmark target, so the
 # compile-only path still exercises the real target architecture.
-FALLBACK_ARCHITECTURE = "89"
+FALLBACK_ARCHITECTURE = "75"
 
 class _StepFailed(Exception):
     """Raised when a build or test step fails, to unwind without exiting non-zero."""

@@ -16,7 +16,7 @@
 - Run compute-sanitizer (memcheck and racecheck) on every new kernel.
 - Never invent a number. Every figure comes from a committed script and its committed output.
 - One optimization per step. Log it in `docs/optimization-log.md` with its hypothesis, NCU evidence (`profiles/`) and measured delta. Failed attempts are logged too.
-- Never mix Turing (sm_75) and Ada (sm_89) results in one table.
+- Never mix results from different architectures in one table. The target is the Kaggle T4 (sm_75).
 
 ## Phase workflow
 Each phase ends with tests in `tests/`, a results document `docs/results/phase-N-<name>.md` (environment, verbatim output, what it proves and what it does not, how to reproduce), an update to the ROADMAP checklist, and then a commit and push.
@@ -24,15 +24,15 @@ Each phase ends with tests in `tests/`, a results document `docs/results/phase-N
 ## Code layout
 - Public C ABI `include/ccml/`: `ccml_<op>_<f32|f16|bf16>(out, in..., dims..., params..., algo, stream)`. A new variant is a new `algo` enum value and a new `case`. An unbuilt variant returns `CCML_ERROR_NOT_IMPLEMENTED`.
 - `src/<op>/<op>.cu` holds the host side (validation and dispatch). `src/<op>/<op>_kernels.cuh` holds device code only. Operators never include each other. Shared helpers go in `src/common/`.
-- `tests/` checks correctness only and never times. `bench/` times only. `profiles/` holds small reports. `results/<arch>/` holds CSVs. `scripts/` holds automation.
+- `tests/` checks correctness only and never times. `bench/` times only. `profiles/` holds small reports. `results/sm_75/` holds CSVs. `scripts/` holds automation.
 
 ## Build and test
 ```
-cmake --workflow --preset default        # configure + build + ctest (sm_89)
-cmake -B build/t4 -G Ninja -DCCML_CUDA_ARCHITECTURES=75 && cmake --build build/t4
+cmake --workflow --preset default        # configure + build + ctest (sm_75)
+python cloud/kaggle/kaggle_run.py          # run everything on a Kaggle T4
 ctest --preset default -R <op>
 ```
-Hardware: the local machine has an RTX 3050 A Laptop (sm_89, 4 GB, about 2.9 GB free). The Windows SDK is missing, so CUDA does not build locally yet, and local PyTorch is CPU-only. Remote options: Kaggle T4 (sm_75, correctness only) and Modal L4 (sm_89). Use `cloud/`.
+Hardware: **every GPU task runs on a Kaggle T4 (sm_75)** via `cloud/kaggle/`. Credentials are already configured. Batch the work into one kernel run per phase to save quota. Only the items in `docs/local.md` need a local GPU; never plan local work outside that list. The local machine cannot build CUDA (no Windows SDK) and its PyTorch is CPU-only.
 
 ## Git
 - Commit and push using the repo's configured git identity (`Siddhesh-source`). Push to `origin main` after every commit.

@@ -561,7 +561,7 @@ def main() -> int:
         return 1
 
     output_dir = (Path(args.output_dir) if args.output_dir
-                  else Path(__file__).resolve().parents[1] / "results")
+                  else Path(__file__).resolve().parents[1] / "results" / "sm_75")
 
     device = torch.device("cuda")
     props = torch.cuda.get_device_properties(0)
