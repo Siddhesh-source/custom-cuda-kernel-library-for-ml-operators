@@ -97,12 +97,26 @@ def kaggle_username() -> str:
     )
 
 
+def commit_id() -> str:
+    def git(*args: str) -> str:
+        return subprocess.run(["git", *args], cwd=REPO_ROOT, stdout=subprocess.PIPE,
+                              stderr=subprocess.DEVNULL, text=True).stdout.strip()
+    head = git("rev-parse", "--short=12", "HEAD") or "unknown"
+    return head + ("-dirty" if git("status", "--porcelain") else "")
+
+
 def build_payload() -> str:
     """tar.gz the repository and base64 it for embedding in the kernel script."""
     buffer = io.BytesIO()
     file_count = 0
 
     with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
+        # The commit being measured, so every CSV row names it (the kernel has
+        # no .git). "-dirty" marks uncommitted changes in the working tree.
+        commit = commit_id().encode("utf-8")
+        info = tarfile.TarInfo(".ccml_commit")
+        info.size = len(commit)
+        tar.addfile(info, io.BytesIO(commit))
         for root, dirs, files in os.walk(REPO_ROOT):
             dirs[:] = [d for d in dirs if d not in EXCLUDE_DIRS]
             for name in files:
@@ -172,7 +186,7 @@ def kaggle(*args: str, check: bool = True) -> subprocess.CompletedProcess:
     return completed
 
 
-def wait_for_completion(kernel_id: str, timeout_seconds: int = 2400) -> str:
+def wait_for_completion(kernel_id: str, timeout_seconds: int = 6 * 3600) -> str:
     """Poll until the kernel stops running. Returns the final status text."""
     print("\nwaiting for the kernel to finish (Ctrl-C to stop waiting; the run "
           "continues on Kaggle)")
@@ -202,6 +216,8 @@ def fetch_output(kernel_id: str) -> None:
     print("# KERNEL OUTPUT")
     print("#" * 72)
 
+    collect_results()
+
     log = OUTPUT_DIR / "ccml_build_log.txt"
     if log.is_file():
         text = log.read_text(encoding="utf-8", errors="replace")
@@ -219,6 +235,19 @@ def fetch_output(kernel_id: str) -> None:
     for path in found:
         print("--- " + path.name + " ---")
         print(path.read_text(encoding="utf-8", errors="replace"))
+
+
+def collect_results() -> None:
+    """Copy out/results/<arch>/ from the fetched output into the repository's
+    results/<arch>/, so a run's CSVs, peaks and sanitizer logs can be committed."""
+    fetched = OUTPUT_DIR / "out" / "results"
+    if not fetched.is_dir():
+        return
+    for arch_dir in sorted(p for p in fetched.iterdir() if p.is_dir()):
+        target = REPO_ROOT / "results" / arch_dir.name
+        shutil.copytree(arch_dir, target, dirs_exist_ok=True)
+        print("collected " + str(sum(1 for _ in arch_dir.rglob("*"))) + " files into "
+              + str(target.relative_to(REPO_ROOT)))
 
 
 def main() -> None:

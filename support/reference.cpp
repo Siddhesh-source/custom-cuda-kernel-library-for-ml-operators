@@ -1,4 +1,4 @@
-#include "tests/support/reference.h"
+#include "support/reference.h"
 
 #include <cmath>
 

@@ -1,5 +1,5 @@
-#ifndef CCML_TESTS_SUPPORT_REFERENCE_H
-#define CCML_TESTS_SUPPORT_REFERENCE_H
+#ifndef CCML_SUPPORT_REFERENCE_H
+#define CCML_SUPPORT_REFERENCE_H
 
 #include <vector>
 
@@ -41,4 +41,4 @@ bool softmax_reference(std::vector<double>&      out,
 
 }  // namespace ccml_test
 
-#endif /* CCML_TESTS_SUPPORT_REFERENCE_H */
+#endif /* CCML_SUPPORT_REFERENCE_H */

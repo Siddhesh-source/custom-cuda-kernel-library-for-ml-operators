@@ -25,7 +25,7 @@
 #include "support/cuda_stream.h"
 #include "support/device_buffer.h"
 #include "support/random.h"
-#include "tests/support/compare.h"
+#include "support/compare.h"
 #include "tests/support/harness.h"
 
 using ccml_support::CudaStream;

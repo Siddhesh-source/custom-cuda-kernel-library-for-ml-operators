@@ -8,9 +8,9 @@
 #include "ccml/status.h"
 #include "support/device_buffer.h"
 #include "support/random.h"
-#include "tests/support/compare.h"
+#include "support/compare.h"
 #include "tests/support/harness.h"
-#include "tests/support/reference.h"
+#include "support/reference.h"
 
 using ccml_support::DeviceBuffer;
 using ccml_support::Rng;

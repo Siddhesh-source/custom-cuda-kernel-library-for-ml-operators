@@ -1,11 +1,10 @@
 # Correctness only. Nothing in this directory measures time, and nothing here
 # may ever fail because of a performance threshold.
 
-# Shared harness: registry and runner, comparison and tolerance, CPU oracles.
+# Test registry and runner. The fp64 references and tolerance comparison live in
+# support/, because the benchmark correctness gate uses them too.
 add_library(ccml_test_support STATIC
-  support/harness.cpp
-  support/compare.cpp
-  support/reference.cpp)
+  support/harness.cpp)
 
 target_include_directories(ccml_test_support PUBLIC ${PROJECT_SOURCE_DIR})
 target_link_libraries(ccml_test_support PUBLIC ccml::ccml ccml_support)
@@ -50,3 +49,10 @@ ccml_add_test(harness        test_harness.cpp)        # tests the test harness
 ccml_add_test(matmul    test_matmul.cpp)
 ccml_add_test(layernorm test_layernorm.cpp)
 ccml_add_test(softmax   test_softmax.cpp)
+
+# The benchmark harness's statistics, shape reader and report logic. Built only
+# with the benchmarks, because it links their support library.
+if(CCML_BUILD_BENCHMARKS)
+  ccml_add_test(bench_stats test_bench_stats.cpp)
+  target_link_libraries(ccml_test_bench_stats PRIVATE ccml_bench_support)
+endif()

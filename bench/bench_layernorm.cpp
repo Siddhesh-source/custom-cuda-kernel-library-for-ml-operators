@@ -1,84 +1,73 @@
-#include <cstdint>
+/* Layernorm benchmark: every ccml variant on every shape in bench/shapes.json.
+   The vendor baseline for layernorm is PyTorch eager (scripts/bench_torch.py):
+   cuDNN has no legacy-API layernorm (see bench/baselines/cudnn_softmax.h).
+   Variants not yet built report NOT_RUN, never a time. */
+
 #include <cstdio>
-#include <string>
+#include <exception>
 #include <vector>
 
-#include "bench/support/report.h"
-#include "bench/support/timer.h"
+#include "bench/support/driver.h"
+#include "bench/support/metrics.h"
 #include "ccml/layernorm.h"
-#include "ccml/memory.h"
 #include "ccml/status.h"
+#include "support/compare.h"
 #include "support/device_buffer.h"
 #include "support/random.h"
+#include "support/reference.h"
 
+using namespace ccml_bench;
 using ccml_support::DeviceBuffer;
-using ccml_support::Rng;
 
-namespace {
+int main(int argc, char** argv) {
+  constexpr float kEps = 1e-5f;
+  try {
+    const Options options = parse_options(argc, argv);
+    Emitter emitter(options, "layernorm");
+    cudaStream_t stream = nullptr;
 
-struct Shape {
-  int rows;
-  int cols;
-};
+    for (const ShapeEntry& shape : load_shapes(options.shapes, "layernorm")) {
+      if (!tag_matches(shape, options.filter)) continue;
+      const int rows = static_cast<int>(shape.rows), cols = static_cast<int>(shape.cols);
+      const std::size_t elements = static_cast<std::size_t>(rows) * cols;
+      if (!fits_in_memory(4.0 * (2.0 * static_cast<double>(elements) + 2.0 * cols))) {
+        emitter.skip("f32", shape, "insufficient device memory");
+        continue;
+      }
 
-constexpr int   kWarmup  = 10;
-constexpr int   kRepeats = 50;
-constexpr float kEps     = 1e-5f;
+      std::vector<float> host_x(elements), host_gamma(static_cast<std::size_t>(cols)),
+          host_beta(static_cast<std::size_t>(cols));
+      ccml_support::Rng rng(1234);
+      rng.normal(host_x.data(), host_x.size(), 0.0f, 1.0f);
+      rng.uniform(host_gamma.data(), host_gamma.size(), 0.5f, 1.5f);
+      rng.uniform(host_beta.data(), host_beta.size(), -1.0f, 1.0f);
 
-/* Column counts chosen to span narrow, warp-sized and wide rows, since that is
-   what decides the reduction strategy. Placeholder until target shapes land. */
-const Shape kShapes[] = {
-    {4096, 256},
-    {4096, 768},
-    {4096, 4096},
-};
+      std::vector<double> reference;
+      ccml_test::layernorm_reference(reference, host_x, host_gamma, host_beta, rows,
+                                     cols, kEps);
+      const ccml_test::Tolerance tolerance = ccml_test::tolerance_for_f32_reduction(cols);
 
-void bench_one(const Shape& shape) {
-  const std::size_t elements = static_cast<std::size_t>(shape.rows) * shape.cols;
+      DeviceBuffer x(elements), y(elements), gamma(host_gamma.size()),
+          beta(host_beta.size());
+      x.upload(host_x.data());
+      gamma.upload(host_gamma.data());
+      beta.upload(host_beta.data());
 
-  std::vector<float> host_x(elements);
-  std::vector<float> host_gamma(static_cast<std::size_t>(shape.cols));
-  std::vector<float> host_beta(static_cast<std::size_t>(shape.cols));
-
-  Rng rng(1234);
-  rng.normal(host_x.data(), host_x.size(), 0.0f, 1.0f);
-  rng.uniform(host_gamma.data(), host_gamma.size(), 0.5f, 1.5f);
-  rng.uniform(host_beta.data(), host_beta.size(), -1.0f, 1.0f);
-
-  DeviceBuffer x(elements);
-  DeviceBuffer y(elements);
-  DeviceBuffer gamma(host_gamma.size());
-  DeviceBuffer beta(host_beta.size());
-  x.upload(host_x.data());
-  gamma.upload(host_gamma.data());
-  beta.upload(host_beta.data());
-
-  const auto launch = [&]() -> bool {
-    return ccml_layernorm_f32(y.data(), x.data(), gamma.data(), beta.data(),
-                              shape.rows, shape.cols, kEps,
-                              CCML_LAYERNORM_TWO_PASS,
-                              /*stream=*/nullptr) == CCML_SUCCESS;
-  };
-
-  ccml_bench::Record record;
-  record.op    = "layernorm";
-  record.algo  = ccml_layernorm_algo_name(CCML_LAYERNORM_TWO_PASS);
-  record.shape = "rows=" + std::to_string(shape.rows) +
-                 ",cols=" + std::to_string(shape.cols);
-  record.timing =
-      ccml_bench::time_launch(launch, kWarmup, kRepeats, /*stream=*/nullptr);
-
-  ccml_bench::print_csv_row(record);
-}
-
-}  // namespace
-
-int main() {
-  ccml_bench::print_run_header();
-  ccml_bench::print_csv_header();
-
-  for (const Shape& shape : kShapes) {
-    bench_one(shape);
+      std::vector<Gated> gated;
+      for (ccml_layernorm_algo algo : {CCML_LAYERNORM_TWO_PASS, CCML_LAYERNORM_WELFORD}) {
+        const Candidate candidate{"ccml", ccml_layernorm_algo_name(algo), [&, algo] {
+                                    return ccml_layernorm_f32(y.data(), x.data(),
+                                                              gamma.data(), beta.data(),
+                                                              rows, cols, kEps, algo,
+                                                              stream) == CCML_SUCCESS;
+                                  }};
+        gated.push_back(gate(candidate, y.data(), y.count(), reference, tolerance, stream));
+      }
+      emitter.emit("f32", shape, 0.0, layernorm_bytes(rows, cols, 4, true), gated, stream);
+    }
+  } catch (const std::exception& e) {
+    std::fprintf(stderr, "ccml_bench_layernorm: %s\n", e.what());
+    return 1;
   }
   return 0;
 }
