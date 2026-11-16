@@ -40,7 +40,10 @@ step "environment"
 VENV=/tmp/ccml-venv   # outside /kaggle/working: a venv is not a result
 bash "$SRC/scripts/setup_env.sh" "$VENV" > "$RES/env_$JOB.txt" 2>&1
 echo "setup_env exit $?"; cat "$RES/env_$JOB.txt"
-PY="$VENV/bin/python"; [ -x "$PY" ] || PY=python3
+# Use the venv only if torch imports from it; otherwise the image interpreter.
+PY="$VENV/bin/python"
+"$PY" -c "import torch" 2>/dev/null || PY="${CCML_PYTHON:-python3}"
+echo "python for this job: $PY"
 
 run_sanitize() {
   step "correctness tests (ctest)"

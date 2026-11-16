@@ -224,7 +224,9 @@ def main():
     run("GPU job (scripts/kaggle_job.sh " + job + " " + impls + ")",
         ["bash", os.path.join(SOURCE, "scripts", "kaggle_job.sh"), SOURCE, BUILD,
          os.path.join(WORK, "out"), job, impls],
-        check=False, env={"CCML_COMMIT": commit})
+        # The interpreter running this script is the image's CUDA-PyTorch one;
+        # a bare python3 on PATH may be a different install without torch.
+        check=False, env={"CCML_COMMIT": commit, "CCML_PYTHON": sys.executable})
 
     emit()
     emit("done. Full log written to " + LOG_PATH)

@@ -254,14 +254,26 @@ def fetch_output(job: str, kernel_id: str, show_log: bool) -> bool:
 SESSION_CAP_MESSAGE = "Maximum batch GPU session count"
 
 
+# Payloads are built ONCE, when the run starts, and reused for every push. A job
+# pushed later (when a session slot frees) must carry the same code as the
+# others; packing the working tree at push time would pick up whatever was
+# edited in the meantime -- which happened once and contaminated a run.
+PAYLOADS: dict = {}
+
+
+def snapshot_payloads(jobs: list[str], impls: str) -> None:
+    for job in jobs:
+        PAYLOADS[job] = build_payload(job, impls)
+    print("snapshot taken at commit " + commit_id() + " for: " + ", ".join(jobs))
+
+
 def push_with_slots(username: str, jobs: list[str], ids: dict, args) -> list[str]:
     """Push each job; Kaggle caps concurrent GPU sessions (2 on this account)
     and REJECTS a push over the cap rather than queueing it. Returns the jobs
     that were rejected for that reason, to be pushed when a slot frees."""
     rejected = []
     for job in jobs:
-        push_dir = write_push_dir(username, job, args.gpu,
-                                  build_payload(job, args.impls), args.pin_t4)
+        push_dir = write_push_dir(username, job, args.gpu, PAYLOADS[job], args.pin_t4)
         out = kaggle("kernels", "push", "-p", str(push_dir), check=False, quiet=True).stdout
         if SESSION_CAP_MESSAGE in out:
             print(job + ": GPU session cap reached; will push when a slot frees")
@@ -336,6 +348,10 @@ def main() -> None:
                 print(job + ": already " + current.split(".")[-1].strip('"') + ", attaching")
                 continue
             pending.append(job)
+        if commit_id().endswith("-dirty"):
+            print("WARNING: uncommitted changes are included in this run; its CSVs will "
+                  "say -dirty. Commit first for a clean provenance.")
+        snapshot_payloads(pending, args.impls)
         pending = push_with_slots(username, pending, ids, args)
         if args.push:
             if pending:

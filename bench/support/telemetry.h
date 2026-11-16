@@ -34,6 +34,8 @@ class TelemetrySource {
   Telemetry sample() const;
   bool available() const { return ok_; }
   std::string driver_version() const;
+  /* NVML's maximum SM clock (boost ceiling); 0 if unknown. */
+  int max_sm_clock_mhz() const;
   /* Compute processes on the GPU other than this one; -1 if unknown. */
   int other_processes() const;
 

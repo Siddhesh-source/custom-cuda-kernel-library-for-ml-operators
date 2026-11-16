@@ -77,6 +77,15 @@ std::string TelemetrySource::driver_version() const {
   return "unknown";
 }
 
+int TelemetrySource::max_sm_clock_mhz() const {
+  unsigned int value = 0;
+  if (ok_ && nvmlDeviceGetMaxClockInfo(static_cast<nvmlDevice_t>(device_), NVML_CLOCK_SM,
+                                       &value) == NVML_SUCCESS) {
+    return static_cast<int>(value);
+  }
+  return 0;
+}
+
 int TelemetrySource::other_processes() const {
   if (!ok_) {
     return -1;
@@ -103,6 +112,7 @@ TelemetrySource::TelemetrySource() = default;
 TelemetrySource::~TelemetrySource() = default;
 Telemetry TelemetrySource::sample() const { return Telemetry{}; }
 std::string TelemetrySource::driver_version() const { return "unknown"; }
+int TelemetrySource::max_sm_clock_mhz() const { return 0; }
 int TelemetrySource::other_processes() const { return -1; }
 
 #endif

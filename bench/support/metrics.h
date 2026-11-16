@@ -31,7 +31,12 @@ struct DevicePeaks {
   double bandwidth_gbps_measured = 0.0;
 };
 
-DevicePeaks theoretical_peaks(const ccml_device_info& info);
+/* `max_sm_clock_mhz` overrides the CUDA clock attribute when it is HIGHER:
+   laptop and consumer GPUs boost above the clock CUDA reports (measured: an
+   RTX 3050 Laptop at 2550 MHz against a reported 2205), and a theoretical peak
+   below what the hardware does would inflate every percent-of-peak figure.
+   Pass NVML's maximum SM clock, or 0 when it is unavailable. */
+DevicePeaks theoretical_peaks(const ccml_device_info& info, int max_sm_clock_mhz = 0);
 
 /* Fills the *_measured fields from a peaks.json written by ccml_bench_peaks.
    Returns false (and leaves them 0) when the file is absent or unreadable. */
