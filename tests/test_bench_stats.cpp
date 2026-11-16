@@ -162,6 +162,11 @@ CCML_TEST(bench_stats, theoretical_peaks_match_published_t4_figures) {
   ctx.check(std::fabs(p.fp32_tflops_theory - 8.1408) < 1e-3, "40*64*2*1.59 GHz");
   ctx.check(std::fabs(p.bandwidth_gbps_theory - 320.064) < 1e-3, "2*5.001 GHz*32 B");
   ctx.check(fp32_cores_per_sm(8, 9) == 128, "Ada: 128 lanes/SM");
+  /* A higher NVML boost clock replaces the CUDA attribute; a lower one does not. */
+  ctx.check(std::fabs(theoretical_peaks(t4, 2000).fp32_tflops_theory - 10.24) < 1e-9,
+            "boost clock above the CUDA attribute is used");
+  ctx.check(std::fabs(theoretical_peaks(t4, 1000).fp32_tflops_theory - 8.1408) < 1e-3,
+            "a lower NVML clock never lowers the theoretical peak");
   ctx.check(fp32_cores_per_sm(3, 0) == 0, "unknown arch: 0, not a guess");
 }
 

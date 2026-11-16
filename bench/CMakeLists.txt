@@ -24,10 +24,24 @@ target_compile_definitions(ccml_bench_support PUBLIC
 
 # NVML: clocks, temperature, throttle reasons per row. Optional; without it the
 # telemetry columns are left empty rather than invented.
+# FindCUDAToolkit's CUDA::nvml needs the toolkit's link stub. Container images
+# such as Kaggle's ship only the driver's versioned libnvidia-ml.so.1, so look
+# for that too; nvml.h itself comes with the toolkit headers.
+set(CCML_NVML_LIBRARY "")
 if(TARGET CUDA::nvml)
-  target_link_libraries(ccml_bench_support PUBLIC CUDA::nvml)
+  set(CCML_NVML_LIBRARY CUDA::nvml)
+else()
+  find_library(CCML_NVML_FILE NAMES nvidia-ml libnvidia-ml.so.1 nvml
+               HINTS ${CUDAToolkit_LIBRARY_DIR} ${CUDAToolkit_LIBRARY_DIR}/stubs
+                     /usr/lib/x86_64-linux-gnu /usr/lib64 /usr/local/nvidia/lib64)
+  if(CCML_NVML_FILE)
+    set(CCML_NVML_LIBRARY ${CCML_NVML_FILE})
+  endif()
+endif()
+if(CCML_NVML_LIBRARY)
+  target_link_libraries(ccml_bench_support PUBLIC ${CCML_NVML_LIBRARY})
   target_compile_definitions(ccml_bench_support PUBLIC CCML_BENCH_HAVE_NVML)
-  message(STATUS "ccml bench: NVML telemetry enabled")
+  message(STATUS "ccml bench: NVML telemetry enabled (${CCML_NVML_LIBRARY})")
 else()
   message(STATUS "ccml bench: NVML not found; telemetry columns will be empty")
 endif()

@@ -15,6 +15,7 @@
 
 #include "bench/support/metrics.h"
 #include "bench/support/stats.h"
+#include "bench/support/telemetry.h"
 #include "ccml/device.h"
 #include "ccml/status.h"
 
@@ -55,14 +56,28 @@ __global__ void copy_peak(float4* __restrict__ dst, const float4* __restrict__ s
   }
 }
 
+/* Warm up for at least kWarmupMs of GPU time before measuring. An idle GPU
+   sits at its lowest clock (300 MHz on a T4) and ramps over hundreds of
+   milliseconds; a fixed handful of launches measured the ramp, not the peak
+   (first Kaggle run: 3.2 "measured" FP32 TFLOPS while cuBLAS reached 6.1). */
+constexpr double kWarmupMs = 1500.0;
+
 template <typename Launch>
-double median_ms(Launch launch, int warmup, int reps) {
-  for (int i = 0; i < warmup; ++i) launch();
-  check(cudaGetLastError(), "launch");
-  check(cudaDeviceSynchronize(), "warmup sync");
+double median_ms(Launch launch, int reps) {
   cudaEvent_t a, b;
   check(cudaEventCreate(&a), "cudaEventCreate");
   check(cudaEventCreate(&b), "cudaEventCreate");
+  double warmed = 0.0;
+  while (warmed < kWarmupMs) {
+    check(cudaEventRecord(a), "cudaEventRecord");
+    launch();
+    check(cudaGetLastError(), "launch");
+    check(cudaEventRecord(b), "cudaEventRecord");
+    check(cudaEventSynchronize(b), "cudaEventSynchronize");
+    float ms = 0.0f;
+    check(cudaEventElapsedTime(&ms, a, b), "cudaEventElapsedTime");
+    warmed += ms;
+  }
   std::vector<double> samples;
   for (int i = 0; i < reps; ++i) {
     check(cudaEventRecord(a), "cudaEventRecord");
@@ -91,14 +106,17 @@ int main(int argc, char** argv) {
     if (ccml_get_device_info(0, &info) != CCML_SUCCESS) {
       throw std::runtime_error(ccml_last_error_string());
     }
-    const ccml_bench::DevicePeaks theory = ccml_bench::theoretical_peaks(info);
+    ccml_bench::TelemetrySource telemetry;
+    const ccml_bench::DevicePeaks theory =
+        ccml_bench::theoretical_peaks(info, telemetry.max_sm_clock_mhz());
 
     /* FP32: enough resident blocks to saturate every SM several times over. */
     const int threads = 256;
     const int blocks = info.multiprocessor_count * 32;
     float* sink = nullptr;
     check(cudaMalloc(&sink, sizeof(float) * blocks * threads), "cudaMalloc sink");
-    const double fma_ms = median_ms([&] { fma_peak<<<blocks, threads>>>(sink, 1.0f); }, 3, 20);
+    const double fma_ms = median_ms([&] { fma_peak<<<blocks, threads>>>(sink, 1.0f); }, 20);
+    const ccml_bench::Telemetry during_fma = telemetry.sample();
     const double flops = 2.0 * kChains * kFmaIters * static_cast<double>(blocks) * threads;
     const double tflops = flops / (fma_ms * 1e-3) / 1e12;
     cudaFree(sink);
@@ -115,21 +133,28 @@ int main(int argc, char** argv) {
     const std::size_t n = bytes / sizeof(float4);
     const int copy_blocks = info.multiprocessor_count * 8;
     const double copy_ms =
-        median_ms([&] { copy_peak<<<copy_blocks, 512>>>(dst, src, n); }, 3, 30);
+        median_ms([&] { copy_peak<<<copy_blocks, 512>>>(dst, src, n); }, 30);
+    const ccml_bench::Telemetry during_copy = telemetry.sample();
     const double gbps = 2.0 * static_cast<double>(bytes) / (copy_ms * 1e-3) / 1e9;
     cudaFree(src);
     cudaFree(dst);
 
-    char json[1024];
+    char json[1536];
     std::snprintf(json, sizeof(json),
                   "{\n  \"gpu\": \"%s\",\n  \"cc\": \"%d.%d\",\n"
                   "  \"fp32_tflops_theory\": %.4f,\n  \"fp32_tflops_measured\": %.4f,\n"
                   "  \"bandwidth_gbps_theory\": %.2f,\n  \"bandwidth_gbps_measured\": %.2f,\n"
-                  "  \"copy_bytes\": %zu,\n  \"method\": \"median of event-timed runs; "
-                  "fma: %d chains x %d iters; copy: float4 grid-stride, read+write\"\n}\n",
+                  "  \"sm_clock_mhz_during_fma\": %d,\n  \"sm_clock_mhz_during_copy\": %d,\n"
+                  "  \"max_sm_clock_mhz\": %d,\n  \"clock_reasons_during_fma\": \"0x%llx\",\n"
+                  "  \"copy_bytes\": %zu,\n  \"method\": \"%.0f ms GPU-time warmup, then median "
+                  "of event-timed runs; fma: %d chains x %d iters; copy: float4 grid-stride, "
+                  "read+write\"\n}\n",
                   info.name, info.compute_major, info.compute_minor,
                   theory.fp32_tflops_theory, tflops, theory.bandwidth_gbps_theory, gbps,
-                  bytes, kChains, kFmaIters);
+                  during_fma.sm_clock_mhz, during_copy.sm_clock_mhz,
+                  telemetry.max_sm_clock_mhz() > 0 ? telemetry.max_sm_clock_mhz()
+                                                   : info.clock_khz / 1000,
+                  during_fma.reasons, bytes, kWarmupMs, kChains, kFmaIters);
     std::fputs(json, stdout);
     if (!out_path.empty()) {
       std::FILE* f = std::fopen(out_path.c_str(), "w");

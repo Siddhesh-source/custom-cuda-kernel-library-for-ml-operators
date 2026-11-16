@@ -27,7 +27,7 @@ RunContext collect_context(const TelemetrySource& telemetry,
   ctx.cuda = std::to_string(runtime / 1000) + "." + std::to_string((runtime % 1000) / 10);
   const char* commit = std::getenv("CCML_COMMIT");
   ctx.commit = commit != nullptr && *commit != '\0' ? commit : "unknown";
-  ctx.peaks = theoretical_peaks(info);
+  ctx.peaks = theoretical_peaks(info, telemetry.max_sm_clock_mhz());
   ctx.l2_bytes = static_cast<std::size_t>(info.l2_cache_size);
   if (!peaks_path.empty()) {
     load_measured_peaks(peaks_path, &ctx.peaks);

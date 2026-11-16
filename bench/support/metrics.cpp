@@ -35,12 +35,15 @@ int fp32_cores_per_sm(int major, int minor) {
   }
 }
 
-DevicePeaks theoretical_peaks(const ccml_device_info& info) {
+DevicePeaks theoretical_peaks(const ccml_device_info& info, int max_sm_clock_mhz) {
   DevicePeaks peaks;
   const int lanes = fp32_cores_per_sm(info.compute_major, info.compute_minor);
+  double clock_hz = static_cast<double>(info.clock_khz) * 1e3;
+  if (max_sm_clock_mhz > 0 && static_cast<double>(max_sm_clock_mhz) * 1e6 > clock_hz) {
+    clock_hz = static_cast<double>(max_sm_clock_mhz) * 1e6;
+  }
   peaks.fp32_tflops_theory = static_cast<double>(info.multiprocessor_count) *
-                             lanes * 2.0 *
-                             (static_cast<double>(info.clock_khz) * 1e3) / 1e12;
+                             lanes * 2.0 * clock_hz / 1e12;
   peaks.bandwidth_gbps_theory = 2.0 *
                                 (static_cast<double>(info.memory_clock_khz) * 1e3) *
                                 (static_cast<double>(info.memory_bus_width) / 8.0) /
