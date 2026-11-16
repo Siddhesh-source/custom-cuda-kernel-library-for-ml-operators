@@ -1,5 +1,7 @@
 # The finished project
 
+> **Superseded in part (2026-11-16):** `docs/reference.md` is the binding specification. Any scope exclusion below that conflicts with it (Tensor Cores/WMMA, double buffering, vectorized loads, fusion, FP16/BF16, `torch.utils.cpp_extension`) no longer applies. See [ROADMAP.md](ROADMAP.md).
+
 What this library looks like when it is complete, how it gets there from where
 it stands today, and how anyone will be able to check the claims.
 

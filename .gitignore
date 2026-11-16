@@ -39,3 +39,7 @@ cloud/kaggle/_output/
 *.nsys-rep
 *.nvvp
 *.qdrep
+
+# reference.md §7: small profiler reports ARE committed under profiles/
+!profiles/**/*.ncu-rep
+!profiles/**/*.nsys-rep

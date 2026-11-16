@@ -152,6 +152,24 @@ and shared device utilities live in `src/common/`, not copied between operators.
 
 ## Documentation
 
+**Specification and plan:**
+
+- [Reference](docs/reference.md): the binding project specification
+- [Project overview](docs/PROJECT_OVERVIEW.md) · [Roadmap](docs/ROADMAP.md) ·
+  [Enhancements](docs/enhancements.md)
+
+**Start here if you are new to CUDA:**
+
+- [Foundations](docs/foundations.md) — every concept this project uses, built up
+  from nothing, with small examples. Written for someone who knows C++ but has
+  never written a GPU kernel. Each idea is tied to a file or a measurement from
+  this repository.
+- [Project vision](docs/project-vision.md) — what the finished library looks
+  like, the roadmap to get there, and what "complete" means as an auditable
+  checklist.
+
+**Reference:**
+
 - [Design](docs/design.md) — algorithm choices and the reasoning behind them
 - [Correctness](docs/correctness.md) — method, tolerance policy, measured errors
 - [Benchmarking](docs/benchmarking.md) — timing method, and what is deliberately absent
