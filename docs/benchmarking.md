@@ -32,8 +32,13 @@ On a **Kaggle Tesla T4 (sm_75)**, through `cloud/kaggle/kaggle_run.py`, with
 the machine shape pinned to T4. Every row records the GPU, compute capability,
 driver, CUDA version, SM and memory clocks, temperature and throttle reasons.
 Clocks cannot be locked on Kaggle (`nvidia-smi -lgc` is denied, as measured by
-the probe on 2026-11-16). The harness therefore records clocks per row and
-flags throttled samples, rather than assuming the clocks are fixed.
+the probe on 2026-11-16). The harness therefore records clocks per row,
+sampled **while that candidate's last round is executing**, and flags
+throttled samples, rather than assuming the clocks are fixed. Expect the T4 to
+run at its 70 W **power cap** on long, heavy kernels (median 945 MHz for
+kernels over 1 ms, NVML reason `0x4`). That is not throttling. It affects
+every implementation alike, and the `sm_clock_mhz` column allows
+clock-normalized comparisons.
 
 ## Rules [reference.md, Method]
 
@@ -42,7 +47,12 @@ flags throttled samples, rather than assuming the clocks are fixed.
    that fails (M7).
 2. **CUDA events.** Warmup is at least 20 launches, then at least 100 timed
    iterations (default 200), each bracketed by events. Wall-clock time without
-   synchronization is never used.
+   synchronization is never used. Every timed iteration is preceded by a
+   **launch-gap guard**, a short GPU spin (`bench/support/spin.cu`;
+   `torch.cuda._sleep` in Python). Without it, the GPU would idle inside the
+   timed window while the CPU submits a short kernel. The first T4 run
+   measured Python medians at up to 2.1x the batched mean because of exactly
+   that.
 3. **Statistics.** Report the median, p10, p90, IQR and min, plus a bootstrap
    95% CI on the median (M1).
 4. **Identical conditions.** Same GPU, dtype, shapes and session for everything
