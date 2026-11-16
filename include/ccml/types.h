@@ -6,6 +6,17 @@
    cudaStream_t would hide nothing and cost every reader a lookup. */
 #include <cuda_runtime.h>
 
+/* IEEE 754 binary16: 1 sign, 5 exponent, 10 mantissa bits. */
+typedef struct ccml_f16 {
+  unsigned short bits;
+} ccml_f16;
+
+/* bfloat16: 1 sign, 8 exponent, 7 mantissa bits (float32 with the low 16 bits
+   of the mantissa dropped). */
+typedef struct ccml_bf16 {
+  unsigned short bits;
+} ccml_bf16;
+
 /*
  * Conventions every operator in this library obeys
  * ================================================
@@ -16,9 +27,17 @@
  *   can be fused with whatever else it is doing.
  *
  * Precision
- *   float32 storage throughout. Reductions accumulate in float32 unless an
+ *   Three storage types, one entry point each: ccml_<op>_f32, ccml_<op>_f16 and
+ *   ccml_<op>_bf16 (reference.md section 3: FP32, FP16, BF16). Whatever the
+ *   storage type, arithmetic is float32 or wider: inputs are widened on load
+ *   and rounded once on store. Reductions accumulate in float32 unless an
  *   operator's own header says otherwise. Reference implementations used in
  *   tests accumulate in double -- that is what makes them a reference.
+ *
+ *   ccml_f16 and ccml_bf16 are 16-bit storage types with exactly the layout of
+ *   CUDA's __half and __nv_bfloat16, so a device pointer to either may be
+ *   passed after a cast. They are plain structs so that this header needs no
+ *   CUDA half-precision headers and stays usable from C and from ctypes.
  *
  * Pointers
  *   Every tensor pointer is a DEVICE pointer. The library never allocates the

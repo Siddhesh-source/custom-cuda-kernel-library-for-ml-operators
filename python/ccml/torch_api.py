@@ -1,26 +1,15 @@
-"""Minimal PyTorch interface over the ccml CUDA kernels.
+"""Minimal PyTorch interface over the ccml CUDA kernels (interim).
 
-Why ctypes over tensor.data_ptr() and not torch.utils.cpp_extension
--------------------------------------------------------------------
-`cpp_extension` is the conventional route, but it needs a compiler and a
-CUDA-enabled PyTorch whose CUDA version matches the local toolkit, *at import
-time*. The development machine here has PyTorch 2.1.1+cpu and cannot compile
-CUDA at all, so that route cannot even be attempted, and on any other machine it
-adds a second build system beside the CMake one.
+reference.md section 3 requires a torch.utils.cpp_extension extension; that is
+Phase 14 (docs/ROADMAP.md) and replaces this module. Until then this ctypes
+layer is the zero-copy path: validate the tensor, pass its data_ptr() to the C
+ABI, let the kernel write into a tensor PyTorch allocated, on PyTorch's current
+stream.
 
-The library already exposes a flat C ABI taking device pointers. A PyTorch
-tensor's `data_ptr()` is exactly such a pointer. So the binding is: validate the
-tensor, hand its pointer to the C function, and let the kernel write into a
-tensor PyTorch allocated. No compiler, no second build, and no copy.
-
-What this costs: no autograd, and no torch dispatcher integration. Neither is in
-scope at this milestone. If a backward pass is ever needed, a `cpp_extension`
-wrapper can be added over the same C ABI without changing any CUDA code.
-
-Nothing here is copied to the host. Tensors that are not already on the GPU, not
-float32, or not contiguous are rejected with an explanation rather than silently
-converted -- a hidden `.cpu()` or `.contiguous()` is exactly the sort of cost
-that should be the caller's decision.
+float32, float16 and bfloat16 tensors dispatch to ccml_<op>_f32 / _f16 / _bf16.
+Tensors that are not on the GPU, not one of those dtypes, or not contiguous are
+rejected with an explanation rather than silently converted -- a hidden
+.cpu(), .float() or .contiguous() is a cost that should be the caller's choice.
 """
 
 from __future__ import annotations
@@ -40,6 +29,23 @@ _FLOAT_P = ctypes.POINTER(ctypes.c_float)
 _MATMUL_AUTO = 0
 _LAYERNORM_AUTO = 0
 _SOFTMAX_AUTO = 0
+
+
+_SUFFIX = {torch.float32: "f32", torch.float16: "f16", torch.bfloat16: "bf16"}
+
+
+def _ptr(tensor: Optional[torch.Tensor]):
+    """Device pointer typed for the entry point of this tensor's dtype."""
+    if tensor is None:
+        return None
+    if tensor.dtype is torch.float32:
+        return _float_ptr(tensor)
+    return ctypes.c_void_p(tensor.data_ptr())
+
+
+def _entry(op: str, dtype: torch.dtype):
+    name = "ccml_" + op + "_" + _SUFFIX[dtype]
+    return getattr(lib(), name), name
 
 
 def _float_ptr(tensor: Optional[torch.Tensor]):
@@ -71,10 +77,10 @@ def _validate(tensor, name: str, min_dims: int = 1) -> None:
             f"move it explicitly with {name}.cuda()."
         )
 
-    if tensor.dtype is not torch.float32:
+    if tensor.dtype not in _SUFFIX:
         raise TypeError(
-            f"{name} must be float32, got {tensor.dtype}. ccml implements float32 "
-            f"only; cast explicitly with {name}.float() if that is what you want."
+            f"{name} must be float32, float16 or bfloat16, got {tensor.dtype}; "
+            f"cast explicitly if that is what you want."
         )
 
     if not tensor.is_contiguous():
@@ -104,17 +110,15 @@ def _rows_and_cols(tensor: torch.Tensor) -> tuple:
 
 
 def custom_softmax(x: torch.Tensor) -> torch.Tensor:
-    """Softmax over the last dimension of a contiguous float32 CUDA tensor."""
+    """Softmax over the last dimension of a contiguous CUDA tensor."""
     _validate(x, "x", min_dims=1)
     rows, cols = _rows_and_cols(x)
 
     out = torch.empty_like(x)
+    fn, name = _entry("softmax", x.dtype)
     with torch.cuda.device(x.device):
-        check(
-            lib().ccml_softmax_f32(_float_ptr(out), _float_ptr(x), rows, cols,
-                                   _SOFTMAX_AUTO, _stream(x.device)),
-            "ccml_softmax_f32",
-        )
+        check(fn(_ptr(out), _ptr(x), rows, cols, _SOFTMAX_AUTO, _stream(x.device)),
+              name)
     return out
 
 
@@ -139,6 +143,8 @@ def custom_layernorm(x: torch.Tensor,
                 f"{name} must have shape ({cols},) to match the normalized "
                 f"dimension, got {tuple(tensor.shape)}"
             )
+        if tensor.dtype != x.dtype:
+            raise TypeError(f"{name} is {tensor.dtype} but x is {x.dtype}")
         if tensor.device != x.device:
             raise ValueError(
                 f"{name} is on {tensor.device} but x is on {x.device}"
@@ -148,19 +154,16 @@ def custom_layernorm(x: torch.Tensor,
         raise ValueError(f"eps must be positive, got {eps}")
 
     out = torch.empty_like(x)
+    fn, name = _entry("layernorm", x.dtype)
     with torch.cuda.device(x.device):
-        check(
-            lib().ccml_layernorm_f32(_float_ptr(out), _float_ptr(x),
-                                     _float_ptr(weight), _float_ptr(bias),
-                                     rows, cols, ctypes.c_float(eps),
-                                     _LAYERNORM_AUTO, _stream(x.device)),
-            "ccml_layernorm_f32",
-        )
+        check(fn(_ptr(out), _ptr(x), _ptr(weight), _ptr(bias), rows, cols,
+                 ctypes.c_float(eps), _LAYERNORM_AUTO, _stream(x.device)),
+              name)
     return out
 
 
 def custom_matmul(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-    """Matrix product of two 2-D contiguous float32 CUDA tensors.
+    """Matrix product of two 2-D contiguous CUDA tensors of the same dtype.
 
     No batching and no broadcasting: [M, K] @ [K, N] -> [M, N].
     """
@@ -178,15 +181,15 @@ def custom_matmul(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         )
     if a.device != b.device:
         raise ValueError(f"a is on {a.device} but b is on {b.device}")
+    if a.dtype != b.dtype:
+        raise TypeError(f"a is {a.dtype} but b is {b.dtype}")
 
     m, k = a.shape
     n = b.shape[1]
 
-    out = torch.empty((m, n), dtype=torch.float32, device=a.device)
+    out = torch.empty((m, n), dtype=a.dtype, device=a.device)
+    fn, name = _entry("matmul", a.dtype)
     with torch.cuda.device(a.device):
-        check(
-            lib().ccml_matmul_f32(_float_ptr(out), _float_ptr(a), _float_ptr(b),
-                                  m, n, k, _MATMUL_AUTO, _stream(a.device)),
-            "ccml_matmul_f32",
-        )
+        check(fn(_ptr(out), _ptr(a), _ptr(b), m, n, k, _MATMUL_AUTO, _stream(a.device)),
+              name)
     return out

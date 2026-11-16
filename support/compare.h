@@ -47,6 +47,34 @@ Tolerance tolerance_for_f32_reduction(int terms);
  * the RMS of the reference output is a good stand-in. Pass it as `scale`. */
 Tolerance tolerance_for_f32_dot_product(int terms, double scale);
 
+/* Softmax outputs are probabilities whose size is set by the row, not by the
+ * number of terms: in a 32000-wide row a typical output is ~3e-5. An absolute
+ * tolerance scaled by sqrt(cols) (tolerance_for_f32_reduction) would therefore
+ * accept a kernel that wrote zeros. Every source of error in softmax --
+ * expf, the double sum, the division -- is RELATIVE to each output, so the
+ * tolerance is relative, with an absolute floor only at float32's smallest
+ * normal value, below which expf itself underflows. */
+Tolerance tolerance_for_softmax_f32(int cols);
+
+/* Widens an f32 tolerance for a 16-bit storage type (FP16, BF16).
+ *
+ * The kernels compute in float32 or wider and round to the storage type once,
+ * on store; the reference is computed in double from the SAME rounded inputs.
+ * So the only extra error is that final rounding: at most half a unit in the
+ * last place, i.e. unit_roundoff * |y| relative. Twice that is allowed, for the
+ * f32 result itself sitting up to its own tolerance away from the reference
+ * before it is rounded. `abs_floor` covers outputs that round into the
+ * subnormal range, where the spacing is absolute (FP16: 2^-24).
+ *
+ *   FP16: unit_roundoff 2^-11, abs_floor 2^-24
+ *   BF16: unit_roundoff 2^-8,  abs_floor FLT_MIN (same exponent range as f32) */
+Tolerance widen_for_storage(const Tolerance& f32, double unit_roundoff,
+                            double abs_floor);
+
+constexpr double kF16UnitRoundoff  = 1.0 / 2048.0;       /* 2^-11 */
+constexpr double kBF16UnitRoundoff = 1.0 / 256.0;        /* 2^-8  */
+constexpr double kF16SubnormalStep = 5.9604644775390625e-08;  /* 2^-24 */
+
 /* Root mean square of a reference, for use as the `scale` above. */
 double rms(const std::vector<double>& values);
 

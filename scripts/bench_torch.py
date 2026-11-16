@@ -98,7 +98,7 @@ def setup(op: str, shape: dict, impls: list[str], mode: str):
         return ref, tol, 0.0, bl.layernorm_bytes(rows, cols, 4), cands
 
     ref = torch.softmax(x.double(), dim=-1)
-    tol = bl.tolerance_reduction(cols)
+    tol = bl.tolerance_softmax(cols)
     if "eager" in impls:
         cands.append(bl.Candidate("pytorch_eager", "torch.softmax",
                                   lambda: torch.softmax(x, dim=-1)))

@@ -144,6 +144,22 @@ def _declare(lib: ctypes.CDLL) -> None:
     ]
     lib.ccml_softmax_f32.restype = ctypes.c_int
 
+    # FP16 and BF16 entry points take ccml_f16* / ccml_bf16*: 16-bit structs,
+    # passed as untyped device pointers.
+    vp = ctypes.c_void_p
+    for suffix in ("f16", "bf16"):
+        mm = getattr(lib, "ccml_matmul_" + suffix)
+        mm.argtypes = [vp, vp, vp, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                       ctypes.c_int, vp]
+        mm.restype = ctypes.c_int
+        ln = getattr(lib, "ccml_layernorm_" + suffix)
+        ln.argtypes = [vp, vp, vp, vp, ctypes.c_int, ctypes.c_int, ctypes.c_float,
+                       ctypes.c_int, vp]
+        ln.restype = ctypes.c_int
+        sm = getattr(lib, "ccml_softmax_" + suffix)
+        sm.argtypes = [vp, vp, ctypes.c_int, ctypes.c_int, ctypes.c_int, vp]
+        sm.restype = ctypes.c_int
+
 
 _lib: ctypes.CDLL | None = None
 

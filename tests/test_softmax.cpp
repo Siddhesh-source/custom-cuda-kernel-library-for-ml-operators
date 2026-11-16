@@ -107,7 +107,7 @@ ErrorStats run_case(const ccml_test::Context& ctx, const Shape& shape,
   check_properties(ctx, got, shape);
 
   const Tolerance tolerance =
-      ccml_test::tolerance_for_f32_reduction(shape.cols);
+      ccml_test::tolerance_for_softmax_f32(shape.cols);
   const ErrorStats stats = ccml_test::compare(got, expected, tolerance);
 
   if (!ccml_test::within(stats)) {
@@ -243,7 +243,7 @@ CCML_TEST(softmax, extreme_dynamic_range) {
   check_properties(ctx, got, shape);
 
   const ErrorStats stats = ccml_test::compare(
-      got, expected, ccml_test::tolerance_for_f32_reduction(shape.cols));
+      got, expected, ccml_test::tolerance_for_softmax_f32(shape.cols));
   ctx.note("range +/-10000: " + stats.to_string());
   ctx.check(ccml_test::within(stats), "exceeded tolerance");
 }

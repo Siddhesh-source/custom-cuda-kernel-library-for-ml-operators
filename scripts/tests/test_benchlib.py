@@ -61,6 +61,12 @@ def test_tolerance_formula_matches_cpp():
     assert abs_d == pytest.approx(3 * abs_t) and rel_d == rel_t
 
 
+def test_softmax_tolerance_is_relative():
+    abs_t, rel_t = bl.tolerance_softmax(32000)
+    assert abs_t < 1e-37  # a typical output in a 32000-wide row is ~3e-5
+    assert rel_t == bl.tolerance_reduction(32000)[1]
+
+
 def _row(gate):
     m = bl.Measured(summary=bl.Summary(n=200, median=10.0, valid=True), valid=True)
     ctx = {"gpu": "Test GPU", "cc": "7.5", "driver": "1", "cuda": "13.0", "commit": "x",

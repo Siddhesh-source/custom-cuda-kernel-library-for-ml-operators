@@ -41,7 +41,7 @@ int main(int argc, char** argv) {
 
       std::vector<double> reference;
       ccml_test::softmax_reference(reference, host_x, rows, cols);
-      const ccml_test::Tolerance tolerance = ccml_test::tolerance_for_f32_reduction(cols);
+      const ccml_test::Tolerance tolerance = ccml_test::tolerance_for_softmax_f32(cols);
 
       DeviceBuffer x(elements), y(elements);
       x.upload(host_x.data());

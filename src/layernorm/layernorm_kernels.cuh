@@ -9,7 +9,8 @@
  *   output   = (value - mean) / sqrt(variance + eps) * gamma + beta
  *
  * One block per row, three passes over the row: mean, variance about that
- * mean, then the normalized write.
+ * mean, then the normalized write. Templated on the storage type T; elements
+ * are widened on load and rounded once on store (common/dtype.cuh).
  *
  * Why two passes and not one
  * --------------------------
@@ -45,6 +46,7 @@
 
 #include <cuda_runtime.h>
 
+#include "common/dtype.cuh"
 #include "common/reduce.cuh"
 #include "common/util.h"
 
@@ -64,13 +66,15 @@ constexpr int kLayerNormBlockSize = 256;
  * Rows wider than the block are handled by striding, so any column count works;
  * nothing here assumes cols is a multiple of anything.
  */
-__global__ void layernorm_two_pass_f32(float*       y,
-                                       const float* x,
-                                       const float* gamma,
-                                       const float* beta,
-                                       int          rows,
-                                       int          cols,
-                                       float        eps) {
+template <typename T>
+__global__ void layernorm_two_pass(T*       y,
+                                   const T* x,
+                                   const T* gamma,
+                                   const T* beta,
+                                   int      rows,
+                                   int      cols,
+                                   float    eps) {
+  using ccml::detail::to_float;
   const int row = static_cast<int>(blockIdx.x);
   if (row >= rows) {
     return;  /* uniform across the block, so the barriers below stay safe */
@@ -79,8 +83,8 @@ __global__ void layernorm_two_pass_f32(float*       y,
   /* 64-bit offset: rows * cols overflows int for large tensors even though each
      dimension fits comfortably. */
   const long long base = static_cast<long long>(row) * cols;
-  const float* __restrict__ row_in  = x + base;
-  float* __restrict__       row_out = y + base;
+  const T* __restrict__ row_in  = x + base;
+  T* __restrict__       row_out = y + base;
 
   __shared__ double scratch[ccml::detail::kReduceScratch];
 
@@ -88,7 +92,7 @@ __global__ void layernorm_two_pass_f32(float*       y,
   double sum = 0.0;
   for (int c = static_cast<int>(threadIdx.x); c < cols;
        c += static_cast<int>(blockDim.x)) {
-    sum += static_cast<double>(row_in[c]);
+    sum += static_cast<double>(to_float(row_in[c]));
   }
   const double mean =
       ccml::detail::block_reduce_sum(sum, scratch) / static_cast<double>(cols);
@@ -100,7 +104,7 @@ __global__ void layernorm_two_pass_f32(float*       y,
   double sum_squares = 0.0;
   for (int c = static_cast<int>(threadIdx.x); c < cols;
        c += static_cast<int>(blockDim.x)) {
-    const double deviation = static_cast<double>(row_in[c]) - mean;
+    const double deviation = static_cast<double>(to_float(row_in[c])) - mean;
     sum_squares += deviation * deviation;
   }
   const double variance =
@@ -114,14 +118,14 @@ __global__ void layernorm_two_pass_f32(float*       y,
   /* Pass 3: normalize, apply the optional affine, write. */
   for (int c = static_cast<int>(threadIdx.x); c < cols;
        c += static_cast<int>(blockDim.x)) {
-    double normalized = (static_cast<double>(row_in[c]) - mean) * inv_stddev;
+    double normalized = (static_cast<double>(to_float(row_in[c])) - mean) * inv_stddev;
     if (gamma != nullptr) {
-      normalized *= static_cast<double>(gamma[c]);
+      normalized *= static_cast<double>(to_float(gamma[c]));
     }
     if (beta != nullptr) {
-      normalized += static_cast<double>(beta[c]);
+      normalized += static_cast<double>(to_float(beta[c]));
     }
-    row_out[c] = static_cast<float>(normalized);
+    row_out[c] = ccml::detail::from_double<T>(normalized);
   }
 }
 

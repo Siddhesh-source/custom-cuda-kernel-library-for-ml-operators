@@ -50,6 +50,9 @@ ccml_add_test(matmul    test_matmul.cpp)
 ccml_add_test(layernorm test_layernorm.cpp)
 ccml_add_test(softmax   test_softmax.cpp)
 
+# FP16 and BF16 storage for all three operators (reference.md section 3).
+ccml_add_test(dtypes    test_dtypes.cpp)
+
 # The benchmark harness's statistics, shape reader and report logic. Built only
 # with the benchmarks, because it links their support library.
 if(CCML_BUILD_BENCHMARKS)
