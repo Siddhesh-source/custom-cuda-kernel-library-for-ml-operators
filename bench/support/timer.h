@@ -1,43 +1,89 @@
 #ifndef CCML_BENCH_SUPPORT_TIMER_H
 #define CCML_BENCH_SUPPORT_TIMER_H
 
+#include <cstddef>
 #include <functional>
 #include <string>
+#include <vector>
 
 #include <cuda_runtime.h>
+
+#include "bench/support/stats.h"
+#include "bench/support/telemetry.h"
 
 namespace ccml_bench {
 
 /*
- * CUDA-event timing.
+ * CUDA-event timing (reference.md, Method).
  *
- * Measured on the device, not with a host clock. On the Windows WDDM driver
- * model the OS batches command submission, so a host-side wall clock around a
- * launch can report almost anything; cudaEvent timestamps are recorded in the
- * stream itself and do not have that problem.
- *
- * Warmup iterations are discarded. They are not a formality: the first launch
- * of a kernel pays module load and JIT, and the GPU clocks are still ramping.
+ *  - Warmup launches are discarded (module load, JIT, clock ramp-up).
+ *  - Every timed iteration is bracketed by its own event pair, so the median
+ *    and spread come from >= 100 real samples.
+ *  - The spec's batched pattern (one event pair around ITERS launches) is also
+ *    run and reported as batched_mean_us, as a cross-check on the per-iteration
+ *    numbers.
+ *  - Candidates are interleaved in rounds (A,B,C,A,B,C,...) so slow drift in
+ *    clocks or temperature hits every candidate equally.
+ *  - Cold mode overwrites a buffer larger than L2 before each iteration, outside
+ *    the timed region, so small shapes cannot be timed out of a warm L2.
  */
 
-struct TimingResult {
-  double mean_ms   = 0.0;
-  double min_ms    = 0.0;
-  double max_ms    = 0.0;
-  double stddev_ms = 0.0;
-  int    samples   = 0;
-  bool   valid     = false;  /* false if the work under test did not run */
+/* `launch` enqueues one call on the stream and returns false if it could not
+   (the call is then reported as not run, never as a fast time). */
+struct Candidate {
+  std::string           impl;   /* "ccml", "cublas", "cublaslt", "cudnn" */
+  std::string           algo;   /* variant name within impl */
+  std::function<bool()> launch;
 };
 
-/* Runs `launch` warmup times, then samples it `repeats` times.
- *
- * `launch` must return true if the work was actually submitted. Returning false
- * (an unimplemented operator, say) produces an invalid result rather than a
- * timing of nothing, which would otherwise look like an extremely fast kernel. */
-TimingResult time_launch(const std::function<bool()>& launch,
-                         int warmup,
-                         int repeats,
-                         cudaStream_t stream);
+struct TimingConfig {
+  int    warmup = 20;
+  int    max_iters = 200;
+  int    min_iters = 100;          /* the spec's floor; never go below it */
+  double budget_ms = 3000.0;       /* per candidate per cache mode */
+  int    rounds = 4;
+  bool   cold_l2 = false;
+  /* Launch-gap guard before every timed iteration (bench/support/spin.h).
+     Must exceed the host's submission time for start + kernel + stop. */
+  double guard_us = 200.0;
+};
+
+struct Measured {
+  Summary     summary;             /* microseconds, GPU time per call */
+  /* The spec's batched pattern: back-to-back launches with no guard. For
+     kernels shorter than their submission cost this includes CPU-bound gaps,
+     so it is the launch-throughput view, not the kernel time. */
+  double      batched_mean_us = 0.0;
+  /* Sampled while this candidate's last round was still executing, so the
+     clocks are those the GPU ran at, not its idle clocks afterwards. */
+  Telemetry   telemetry;
+  bool        valid = false;
+  std::string error;
+};
+
+/* Owns a scratch buffer of 2 x L2 size, written to evict L2 before a cold run. */
+class L2Flusher {
+ public:
+  explicit L2Flusher(std::size_t l2_bytes);
+  ~L2Flusher();
+  L2Flusher(const L2Flusher&) = delete;
+  L2Flusher& operator=(const L2Flusher&) = delete;
+  void flush(cudaStream_t stream);
+
+ private:
+  void*       buffer_ = nullptr;
+  std::size_t bytes_ = 0;
+};
+
+std::vector<Measured> time_interleaved(const std::vector<Candidate>& candidates,
+                                       const TimingConfig& config,
+                                       cudaStream_t stream,
+                                       L2Flusher* flusher,
+                                       const TelemetrySource* telemetry = nullptr);
+
+/* Iteration count for an estimated per-call time: as many as fit in the
+   budget, clamped to [min_iters, max_iters]. Exposed for tests. */
+int choose_iterations(double estimate_ms, const TimingConfig& config);
 
 }  // namespace ccml_bench
 

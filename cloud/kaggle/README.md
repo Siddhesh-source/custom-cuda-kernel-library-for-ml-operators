@@ -23,13 +23,17 @@ usually why — check [kaggle.com/settings](https://www.kaggle.com/settings).
 
 ## Running
 
-    python cloud/kaggle/kaggle_run.py            # push, wait, print the log
-    python cloud/kaggle/kaggle_run.py --push     # push and return immediately
-    python cloud/kaggle/kaggle_run.py --fetch    # fetch the last run's log
-    python cloud/kaggle/kaggle_run.py --no-gpu   # CPU kernel, compile check only
+    python cloud/kaggle/kaggle_run.py                        # 4 parallel sessions: sanitize, matmul, layernorm, softmax
+    python cloud/kaggle/kaggle_run.py --jobs matmul --impls ccml   # later phases: re-time only what changed
+    python cloud/kaggle/kaggle_run.py --push                 # push and return immediately
+    python cloud/kaggle/kaggle_run.py --fetch                # fetch logs, copy results/<arch>/ into the repo
+    python cloud/kaggle/kaggle_run.py --no-gpu --jobs build  # CPU kernel, compile check only
+    python cloud/kaggle/kaggle_run.py --any-gpu              # drop the T4 pin if the queue stalls
 
-The kernel is pushed **private**. It appears at
-`kaggle.com/code/<username>/ccml-build`.
+Each job is a private kernel at `kaggle.com/code/<username>/ccml-<job>`. Jobs are
+split **by operator, never by implementation**, so every comparison in a results
+table comes from one physical GPU in one session (reference.md section 11).
+What each job runs is defined in `scripts/kaggle_job.sh`.
 
 ## How the source gets there
 

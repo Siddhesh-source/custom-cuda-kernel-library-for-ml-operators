@@ -170,6 +170,16 @@ def main():
 
     generator = ensure_toolchain()
 
+    # cuDNN ships inside the PyTorch wheel; point the bench's optional cuDNN
+    # baseline at it.
+    cudnn_root = ""
+    try:
+        import nvidia.cudnn  # noqa: F401
+        cudnn_root = list(nvidia.cudnn.__path__)[0]
+        emit("cuDNN from the PyTorch wheel: " + cudnn_root)
+    except Exception as error:  # noqa: BLE001
+        emit("cuDNN not importable (" + str(error) + "); cuDNN baseline disabled")
+
     run("Configure", [
         "cmake", "-S", SOURCE, "-B", BUILD,
         "-G", generator,
@@ -177,6 +187,7 @@ def main():
         "-DCCML_CUDA_ARCHITECTURES=" + architecture,
         # On deliberately: any warning in code this new is a finding.
         "-DCCML_WARNINGS_AS_ERRORS=ON",
+        "-DCUDNN_ROOT=" + cudnn_root,
     ])
     run("Build", ["cmake", "--build", BUILD, "--parallel"])
     run("Install rules", ["cmake", "--install", BUILD,
@@ -185,41 +196,37 @@ def main():
     # On a CPU kernel this reports no device; that it runs proves linking works.
     run("Device properties", [os.path.join(BUILD, "bin", "ccml_device_query")],
         check=False)
-
-    # The public-API example from the README. Runs here so the documented usage
-    # is verified rather than asserted.
     run("Usage example", [os.path.join(BUILD, "bin", "ccml_usage")], check=False)
 
     if gpu_name is None:
         emit()
-        emit("Skipping tests: no GPU attached.")
+        emit("Skipping the GPU job: no GPU attached.")
         log_file.close()
         return
 
-    run("Correctness tests",
-        ["ctest", "--test-dir", BUILD, "--output-on-failure"], check=False)
-
-    # ctest reports pass/fail per executable; the PASS/FAIL/SKIP breakdown
-    # inside each one is what actually matters while the kernels are stubs.
-    for operator in ("infrastructure", "harness", "matmul", "layernorm", "softmax"):
-        run("Test detail: " + operator,
-            [os.path.join(BUILD, "bin", "ccml_test_" + operator)], check=False)
-
-    library = os.path.join(BUILD, "lib", "libccml.so")
-    run("Python binding tests",
-        [sys.executable, "-m", "pytest",
-         os.path.join(SOURCE, "python", "tests"), "-v"],
-        cwd=SOURCE, check=False, env={"CCML_LIBRARY_PATH": library})
-
-    run("PyTorch comparison",
-        [sys.executable, os.path.join(SOURCE, "python", "compare_with_torch.py")],
-        cwd=SOURCE, check=False, env={"CCML_LIBRARY_PATH": library})
-
-    # Results land in /kaggle/working so they come back with the fetched output.
-    run("Case study",
-        [sys.executable, os.path.join(SOURCE, "python", "case_study.py"),
-         "--output-dir", os.path.join(WORK, "results")],
-        cwd=SOURCE, check=False, env={"CCML_LIBRARY_PATH": library})
+    # Everything else is defined in the repository, so a task branch changes
+    # what a session does without touching this template.
+    commit = ""
+    commit_file = os.path.join(SOURCE, ".ccml_commit")
+    if os.path.exists(commit_file):
+        commit = open(commit_file, encoding="utf-8").read().strip()
+    job, impls = "all", "all"
+    job_file = os.path.join(SOURCE, ".ccml_job")
+    if os.path.exists(job_file):
+        parts = open(job_file, encoding="utf-8").read().split()
+        job = parts[0] if parts else job
+        impls = parts[1] if len(parts) > 1 else impls
+    if job == "build":
+        emit()
+        emit("Job 'build': compile check only.")
+        log_file.close()
+        return
+    run("GPU job (scripts/kaggle_job.sh " + job + " " + impls + ")",
+        ["bash", os.path.join(SOURCE, "scripts", "kaggle_job.sh"), SOURCE, BUILD,
+         os.path.join(WORK, "out"), job, impls],
+        # The interpreter running this script is the image's CUDA-PyTorch one;
+        # a bare python3 on PATH may be a different install without torch.
+        check=False, env={"CCML_COMMIT": commit, "CCML_PYTHON": sys.executable})
 
     emit()
     emit("done. Full log written to " + LOG_PATH)

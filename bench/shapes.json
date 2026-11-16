@@ -1,0 +1,815 @@
+{
+ "_source": "scripts/make_shapes.py; models: gpt2s, gpt2m, llama1b; production shapes not supplied (docs/ROADMAP.md \u00a74)",
+ "matmul": [
+  {
+   "tag": "gpt2s.qkv.m1",
+   "M": 1,
+   "N": 2304,
+   "K": 768
+  },
+  {
+   "tag": "gpt2s.qkv.m16",
+   "M": 16,
+   "N": 2304,
+   "K": 768
+  },
+  {
+   "tag": "gpt2s.qkv.m128",
+   "M": 128,
+   "N": 2304,
+   "K": 768
+  },
+  {
+   "tag": "gpt2s.qkv.m512",
+   "M": 512,
+   "N": 2304,
+   "K": 768
+  },
+  {
+   "tag": "gpt2s.qkv.m2048",
+   "M": 2048,
+   "N": 2304,
+   "K": 768
+  },
+  {
+   "tag": "gpt2s.attn_out.m1",
+   "M": 1,
+   "N": 768,
+   "K": 768
+  },
+  {
+   "tag": "gpt2s.attn_out.m16",
+   "M": 16,
+   "N": 768,
+   "K": 768
+  },
+  {
+   "tag": "gpt2s.attn_out.m128",
+   "M": 128,
+   "N": 768,
+   "K": 768
+  },
+  {
+   "tag": "gpt2s.attn_out.m512",
+   "M": 512,
+   "N": 768,
+   "K": 768
+  },
+  {
+   "tag": "gpt2s.attn_out.m2048",
+   "M": 2048,
+   "N": 768,
+   "K": 768
+  },
+  {
+   "tag": "gpt2s.ffn_up.m1",
+   "M": 1,
+   "N": 3072,
+   "K": 768
+  },
+  {
+   "tag": "gpt2s.ffn_up.m16",
+   "M": 16,
+   "N": 3072,
+   "K": 768
+  },
+  {
+   "tag": "gpt2s.ffn_up.m128",
+   "M": 128,
+   "N": 3072,
+   "K": 768
+  },
+  {
+   "tag": "gpt2s.ffn_up.m512",
+   "M": 512,
+   "N": 3072,
+   "K": 768
+  },
+  {
+   "tag": "gpt2s.ffn_up.m2048",
+   "M": 2048,
+   "N": 3072,
+   "K": 768
+  },
+  {
+   "tag": "gpt2s.ffn_down.m1",
+   "M": 1,
+   "N": 768,
+   "K": 3072
+  },
+  {
+   "tag": "gpt2s.ffn_down.m16",
+   "M": 16,
+   "N": 768,
+   "K": 3072
+  },
+  {
+   "tag": "gpt2s.ffn_down.m128",
+   "M": 128,
+   "N": 768,
+   "K": 3072
+  },
+  {
+   "tag": "gpt2s.ffn_down.m512",
+   "M": 512,
+   "N": 768,
+   "K": 3072
+  },
+  {
+   "tag": "gpt2s.ffn_down.m2048",
+   "M": 2048,
+   "N": 768,
+   "K": 3072
+  },
+  {
+   "tag": "gpt2s.lm_head.m1",
+   "M": 1,
+   "N": 50257,
+   "K": 768
+  },
+  {
+   "tag": "gpt2s.lm_head.m16",
+   "M": 16,
+   "N": 50257,
+   "K": 768
+  },
+  {
+   "tag": "gpt2s.lm_head.m128",
+   "M": 128,
+   "N": 50257,
+   "K": 768
+  },
+  {
+   "tag": "gpt2m.qkv.m1",
+   "M": 1,
+   "N": 3072,
+   "K": 1024
+  },
+  {
+   "tag": "gpt2m.qkv.m16",
+   "M": 16,
+   "N": 3072,
+   "K": 1024
+  },
+  {
+   "tag": "gpt2m.qkv.m128",
+   "M": 128,
+   "N": 3072,
+   "K": 1024
+  },
+  {
+   "tag": "gpt2m.qkv.m512",
+   "M": 512,
+   "N": 3072,
+   "K": 1024
+  },
+  {
+   "tag": "gpt2m.qkv.m2048",
+   "M": 2048,
+   "N": 3072,
+   "K": 1024
+  },
+  {
+   "tag": "gpt2m.attn_out.m1",
+   "M": 1,
+   "N": 1024,
+   "K": 1024
+  },
+  {
+   "tag": "gpt2m.attn_out.m16",
+   "M": 16,
+   "N": 1024,
+   "K": 1024
+  },
+  {
+   "tag": "gpt2m.attn_out.m128",
+   "M": 128,
+   "N": 1024,
+   "K": 1024
+  },
+  {
+   "tag": "gpt2m.attn_out.m512",
+   "M": 512,
+   "N": 1024,
+   "K": 1024
+  },
+  {
+   "tag": "gpt2m.attn_out.m2048",
+   "M": 2048,
+   "N": 1024,
+   "K": 1024
+  },
+  {
+   "tag": "gpt2m.ffn_up.m1",
+   "M": 1,
+   "N": 4096,
+   "K": 1024
+  },
+  {
+   "tag": "gpt2m.ffn_up.m16",
+   "M": 16,
+   "N": 4096,
+   "K": 1024
+  },
+  {
+   "tag": "gpt2m.ffn_up.m128",
+   "M": 128,
+   "N": 4096,
+   "K": 1024
+  },
+  {
+   "tag": "gpt2m.ffn_up.m512",
+   "M": 512,
+   "N": 4096,
+   "K": 1024
+  },
+  {
+   "tag": "gpt2m.ffn_up.m2048",
+   "M": 2048,
+   "N": 4096,
+   "K": 1024
+  },
+  {
+   "tag": "gpt2m.ffn_down.m1",
+   "M": 1,
+   "N": 1024,
+   "K": 4096
+  },
+  {
+   "tag": "gpt2m.ffn_down.m16",
+   "M": 16,
+   "N": 1024,
+   "K": 4096
+  },
+  {
+   "tag": "gpt2m.ffn_down.m128",
+   "M": 128,
+   "N": 1024,
+   "K": 4096
+  },
+  {
+   "tag": "gpt2m.ffn_down.m512",
+   "M": 512,
+   "N": 1024,
+   "K": 4096
+  },
+  {
+   "tag": "gpt2m.ffn_down.m2048",
+   "M": 2048,
+   "N": 1024,
+   "K": 4096
+  },
+  {
+   "tag": "gpt2m.lm_head.m1",
+   "M": 1,
+   "N": 50257,
+   "K": 1024
+  },
+  {
+   "tag": "gpt2m.lm_head.m16",
+   "M": 16,
+   "N": 50257,
+   "K": 1024
+  },
+  {
+   "tag": "gpt2m.lm_head.m128",
+   "M": 128,
+   "N": 50257,
+   "K": 1024
+  },
+  {
+   "tag": "llama1b.qkv.m1",
+   "M": 1,
+   "N": 6144,
+   "K": 2048
+  },
+  {
+   "tag": "llama1b.qkv.m16",
+   "M": 16,
+   "N": 6144,
+   "K": 2048
+  },
+  {
+   "tag": "llama1b.qkv.m128",
+   "M": 128,
+   "N": 6144,
+   "K": 2048
+  },
+  {
+   "tag": "llama1b.qkv.m512",
+   "M": 512,
+   "N": 6144,
+   "K": 2048
+  },
+  {
+   "tag": "llama1b.qkv.m2048",
+   "M": 2048,
+   "N": 6144,
+   "K": 2048
+  },
+  {
+   "tag": "llama1b.attn_out.m1",
+   "M": 1,
+   "N": 2048,
+   "K": 2048
+  },
+  {
+   "tag": "llama1b.attn_out.m16",
+   "M": 16,
+   "N": 2048,
+   "K": 2048
+  },
+  {
+   "tag": "llama1b.attn_out.m128",
+   "M": 128,
+   "N": 2048,
+   "K": 2048
+  },
+  {
+   "tag": "llama1b.attn_out.m512",
+   "M": 512,
+   "N": 2048,
+   "K": 2048
+  },
+  {
+   "tag": "llama1b.attn_out.m2048",
+   "M": 2048,
+   "N": 2048,
+   "K": 2048
+  },
+  {
+   "tag": "llama1b.ffn_up.m1",
+   "M": 1,
+   "N": 8192,
+   "K": 2048
+  },
+  {
+   "tag": "llama1b.ffn_up.m16",
+   "M": 16,
+   "N": 8192,
+   "K": 2048
+  },
+  {
+   "tag": "llama1b.ffn_up.m128",
+   "M": 128,
+   "N": 8192,
+   "K": 2048
+  },
+  {
+   "tag": "llama1b.ffn_up.m512",
+   "M": 512,
+   "N": 8192,
+   "K": 2048
+  },
+  {
+   "tag": "llama1b.ffn_up.m2048",
+   "M": 2048,
+   "N": 8192,
+   "K": 2048
+  },
+  {
+   "tag": "llama1b.ffn_down.m1",
+   "M": 1,
+   "N": 2048,
+   "K": 8192
+  },
+  {
+   "tag": "llama1b.ffn_down.m16",
+   "M": 16,
+   "N": 2048,
+   "K": 8192
+  },
+  {
+   "tag": "llama1b.ffn_down.m128",
+   "M": 128,
+   "N": 2048,
+   "K": 8192
+  },
+  {
+   "tag": "llama1b.ffn_down.m512",
+   "M": 512,
+   "N": 2048,
+   "K": 8192
+  },
+  {
+   "tag": "llama1b.ffn_down.m2048",
+   "M": 2048,
+   "N": 2048,
+   "K": 8192
+  },
+  {
+   "tag": "llama1b.lm_head.m1",
+   "M": 1,
+   "N": 32000,
+   "K": 2048
+  },
+  {
+   "tag": "llama1b.lm_head.m16",
+   "M": 16,
+   "N": 32000,
+   "K": 2048
+  },
+  {
+   "tag": "llama1b.lm_head.m128",
+   "M": 128,
+   "N": 32000,
+   "K": 2048
+  },
+  {
+   "tag": "odd.1x1x1",
+   "M": 1,
+   "N": 1,
+   "K": 1
+  },
+  {
+   "tag": "odd.7x3079x1025",
+   "M": 7,
+   "N": 3079,
+   "K": 1025
+  },
+  {
+   "tag": "odd.33x33x33",
+   "M": 33,
+   "N": 33,
+   "K": 33
+  },
+  {
+   "tag": "odd.127x769x1023",
+   "M": 127,
+   "N": 769,
+   "K": 1023
+  },
+  {
+   "tag": "odd.1000x1000x1000",
+   "M": 1000,
+   "N": 1000,
+   "K": 1000
+  },
+  {
+   "tag": "odd.1025x4097x33",
+   "M": 1025,
+   "N": 4097,
+   "K": 33
+  },
+  {
+   "tag": "odd.2047x2049x127",
+   "M": 2047,
+   "N": 2049,
+   "K": 127
+  }
+ ],
+ "layernorm": [
+  {
+   "tag": "h768.rows1",
+   "rows": 1,
+   "cols": 768
+  },
+  {
+   "tag": "h768.rows16",
+   "rows": 16,
+   "cols": 768
+  },
+  {
+   "tag": "h768.rows128",
+   "rows": 128,
+   "cols": 768
+  },
+  {
+   "tag": "h768.rows512",
+   "rows": 512,
+   "cols": 768
+  },
+  {
+   "tag": "h768.rows2048",
+   "rows": 2048,
+   "cols": 768
+  },
+  {
+   "tag": "h768.rows8192",
+   "rows": 8192,
+   "cols": 768
+  },
+  {
+   "tag": "h1024.rows1",
+   "rows": 1,
+   "cols": 1024
+  },
+  {
+   "tag": "h1024.rows16",
+   "rows": 16,
+   "cols": 1024
+  },
+  {
+   "tag": "h1024.rows128",
+   "rows": 128,
+   "cols": 1024
+  },
+  {
+   "tag": "h1024.rows512",
+   "rows": 512,
+   "cols": 1024
+  },
+  {
+   "tag": "h1024.rows2048",
+   "rows": 2048,
+   "cols": 1024
+  },
+  {
+   "tag": "h1024.rows8192",
+   "rows": 8192,
+   "cols": 1024
+  },
+  {
+   "tag": "h2048.rows1",
+   "rows": 1,
+   "cols": 2048
+  },
+  {
+   "tag": "h2048.rows16",
+   "rows": 16,
+   "cols": 2048
+  },
+  {
+   "tag": "h2048.rows128",
+   "rows": 128,
+   "cols": 2048
+  },
+  {
+   "tag": "h2048.rows512",
+   "rows": 512,
+   "cols": 2048
+  },
+  {
+   "tag": "h2048.rows2048",
+   "rows": 2048,
+   "cols": 2048
+  },
+  {
+   "tag": "h2048.rows8192",
+   "rows": 8192,
+   "cols": 2048
+  },
+  {
+   "tag": "h4096.rows1",
+   "rows": 1,
+   "cols": 4096
+  },
+  {
+   "tag": "h4096.rows16",
+   "rows": 16,
+   "cols": 4096
+  },
+  {
+   "tag": "h4096.rows128",
+   "rows": 128,
+   "cols": 4096
+  },
+  {
+   "tag": "h4096.rows512",
+   "rows": 512,
+   "cols": 4096
+  },
+  {
+   "tag": "h4096.rows2048",
+   "rows": 2048,
+   "cols": 4096
+  },
+  {
+   "tag": "h4096.rows8192",
+   "rows": 8192,
+   "cols": 4096
+  },
+  {
+   "tag": "odd.c1.rows128",
+   "rows": 128,
+   "cols": 1
+  },
+  {
+   "tag": "odd.c1.rows4096",
+   "rows": 4096,
+   "cols": 1
+  },
+  {
+   "tag": "odd.c7.rows128",
+   "rows": 128,
+   "cols": 7
+  },
+  {
+   "tag": "odd.c7.rows4096",
+   "rows": 4096,
+   "cols": 7
+  },
+  {
+   "tag": "odd.c33.rows128",
+   "rows": 128,
+   "cols": 33
+  },
+  {
+   "tag": "odd.c33.rows4096",
+   "rows": 4096,
+   "cols": 33
+  },
+  {
+   "tag": "odd.c1000.rows128",
+   "rows": 128,
+   "cols": 1000
+  },
+  {
+   "tag": "odd.c1000.rows4096",
+   "rows": 4096,
+   "cols": 1000
+  },
+  {
+   "tag": "odd.c1025.rows128",
+   "rows": 128,
+   "cols": 1025
+  },
+  {
+   "tag": "odd.c1025.rows4096",
+   "rows": 4096,
+   "cols": 1025
+  },
+  {
+   "tag": "odd.c3079.rows128",
+   "rows": 128,
+   "cols": 3079
+  },
+  {
+   "tag": "odd.c3079.rows4096",
+   "rows": 4096,
+   "cols": 3079
+  },
+  {
+   "tag": "odd.c4097.rows128",
+   "rows": 128,
+   "cols": 4097
+  },
+  {
+   "tag": "odd.c4097.rows4096",
+   "rows": 4096,
+   "cols": 4097
+  }
+ ],
+ "softmax": [
+  {
+   "tag": "gpt2s.attn.s128",
+   "rows": 1536,
+   "cols": 128
+  },
+  {
+   "tag": "gpt2s.attn.s256",
+   "rows": 3072,
+   "cols": 256
+  },
+  {
+   "tag": "gpt2s.attn.s512",
+   "rows": 6144,
+   "cols": 512
+  },
+  {
+   "tag": "gpt2s.attn.s1024",
+   "rows": 12288,
+   "cols": 1024
+  },
+  {
+   "tag": "gpt2s.attn.s2048",
+   "rows": 24576,
+   "cols": 2048
+  },
+  {
+   "tag": "gpt2m.attn.s128",
+   "rows": 2048,
+   "cols": 128
+  },
+  {
+   "tag": "gpt2m.attn.s256",
+   "rows": 4096,
+   "cols": 256
+  },
+  {
+   "tag": "gpt2m.attn.s512",
+   "rows": 8192,
+   "cols": 512
+  },
+  {
+   "tag": "gpt2m.attn.s1024",
+   "rows": 16384,
+   "cols": 1024
+  },
+  {
+   "tag": "gpt2m.attn.s2048",
+   "rows": 32768,
+   "cols": 2048
+  },
+  {
+   "tag": "llama1b.attn.s128",
+   "rows": 4096,
+   "cols": 128
+  },
+  {
+   "tag": "llama1b.attn.s256",
+   "rows": 8192,
+   "cols": 256
+  },
+  {
+   "tag": "llama1b.attn.s512",
+   "rows": 16384,
+   "cols": 512
+  },
+  {
+   "tag": "llama1b.attn.s1024",
+   "rows": 32768,
+   "cols": 1024
+  },
+  {
+   "tag": "llama1b.attn.s2048",
+   "rows": 65536,
+   "cols": 2048
+  },
+  {
+   "tag": "gpt2s.attn.b8.s512",
+   "rows": 49152,
+   "cols": 512
+  },
+  {
+   "tag": "vocab30522.rows1",
+   "rows": 1,
+   "cols": 30522
+  },
+  {
+   "tag": "vocab30522.rows16",
+   "rows": 16,
+   "cols": 30522
+  },
+  {
+   "tag": "vocab30522.rows128",
+   "rows": 128,
+   "cols": 30522
+  },
+  {
+   "tag": "vocab32000.rows1",
+   "rows": 1,
+   "cols": 32000
+  },
+  {
+   "tag": "vocab32000.rows16",
+   "rows": 16,
+   "cols": 32000
+  },
+  {
+   "tag": "vocab32000.rows128",
+   "rows": 128,
+   "cols": 32000
+  },
+  {
+   "tag": "vocab50257.rows1",
+   "rows": 1,
+   "cols": 50257
+  },
+  {
+   "tag": "vocab50257.rows16",
+   "rows": 16,
+   "cols": 50257
+  },
+  {
+   "tag": "vocab50257.rows128",
+   "rows": 128,
+   "cols": 50257
+  },
+  {
+   "tag": "odd.c1.rows1000",
+   "rows": 1000,
+   "cols": 1
+  },
+  {
+   "tag": "odd.c7.rows1000",
+   "rows": 1000,
+   "cols": 7
+  },
+  {
+   "tag": "odd.c33.rows1000",
+   "rows": 1000,
+   "cols": 33
+  },
+  {
+   "tag": "odd.c1000.rows1000",
+   "rows": 1000,
+   "cols": 1000
+  },
+  {
+   "tag": "odd.c1025.rows1000",
+   "rows": 1000,
+   "cols": 1025
+  },
+  {
+   "tag": "odd.c3079.rows1000",
+   "rows": 1000,
+   "cols": 3079
+  },
+  {
+   "tag": "odd.c4097.rows1000",
+   "rows": 1000,
+   "cols": 4097
+  }
+ ]
+}

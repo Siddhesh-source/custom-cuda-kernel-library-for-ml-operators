@@ -1,0 +1,55 @@
+========= COMPUTE-SANITIZER
+[PASS] matmul.square_tiled
+       tiled M=128 N=128 K=128
+       rms(reference)=11.072625  abs_tol=1.195e-04 rel_tol=1.079e-05
+       n=16384 max_abs=1.804e-05 max_rel=3.352e-03 normalized=0.070 worst_index=2159 nonfinite=0
+[PASS] matmul.square_naive
+       naive M=128 N=128 K=128
+       rms(reference)=11.072625  abs_tol=1.195e-04 rel_tol=1.079e-05
+       n=16384 max_abs=1.804e-05 max_rel=3.352e-03 normalized=0.070 worst_index=2159 nonfinite=0
+[PASS] matmul.ragged_dimensions
+       tiled M=67 N=53 K=41
+       rms(reference)=6.712013  abs_tol=4.099e-05 rel_tol=6.106e-06
+       n=3551 max_abs=5.760e-06 max_rel=2.592e-04 normalized=0.092 worst_index=3146 nonfinite=0
+[PASS] matmul.single_element
+       tiled M=1 N=1 K=1
+       rms(reference)=0.186371  abs_tol=1.777e-07 rel_tol=9.537e-07
+       n=1 max_abs=6.163e-09 max_rel=3.307e-08 normalized=0.017 worst_index=0 nonfinite=0
+[PASS] matmul.tall_skinny
+       tiled M=512 N=1 K=64
+       rms(reference)=8.117055  abs_tol=6.193e-05 rel_tol=7.629e-06
+       n=512 max_abs=6.147e-06 max_rel=1.898e-05 normalized=0.042 worst_index=342 nonfinite=0
+[PASS] matmul.long_k
+       tiled M=32 N=32 K=2048
+       rms(reference)=45.377562  abs_tol=1.958e-03 rel_tol=4.316e-05
+       n=1024 max_abs=1.836e-04 max_rel=3.103e-04 normalized=0.038 worst_index=166 nonfinite=0
+[PASS] matmul.rejects_null_output
+[PASS] matmul.rejects_nonpositive_dimensions
+[PASS] matmul.tiled_agrees_with_naive
+       max |naive - tiled| = 0.000000
+[PASS] matmul.transformer_shapes
+       tiled M=128 N=768 K=768
+       rms(reference)=27.638424  abs_tol=7.305e-04 rel_tol=2.643e-05
+       n=98304 max_abs=1.443e-04 max_rel=2.317e-01 normalized=0.089 worst_index=54848 nonfinite=0
+       tiled M=512 N=768 K=768
+       rms(reference)=27.760843  abs_tol=7.337e-04 rel_tol=2.643e-05
+       n=393216 max_abs=1.615e-04 max_rel=1.021e-01 normalized=0.087 worst_index=270867 nonfinite=0
+       tiled M=128 N=128 K=768
+       rms(reference)=27.848963  abs_tol=7.360e-04 rel_tol=2.643e-05
+       n=16384 max_abs=9.955e-05 max_rel=9.111e-04 normalized=0.071 worst_index=14741 nonfinite=0
+       tiled M=128 N=768 K=128
+       rms(reference)=11.180990  abs_tol=1.206e-04 rel_tol=1.079e-05
+       n=98304 max_abs=2.611e-05 max_rel=2.034e-03 normalized=0.067 worst_index=96672 nonfinite=0
+[PASS] matmul.wide_and_thin
+       tiled M=1 N=512 K=512
+       rms(reference)=21.574247  abs_tol=4.656e-04 rel_tol=2.158e-05
+       n=512 max_abs=3.740e-05 max_rel=1.697e-04 normalized=0.030 worst_index=388 nonfinite=0
+       tiled M=512 N=1 K=512
+       rms(reference)=22.685467  abs_tol=4.895e-04 rel_tol=2.158e-05
+       n=512 max_abs=4.858e-05 max_rel=9.117e-05 normalized=0.047 worst_index=13 nonfinite=0
+       tiled M=512 N=512 K=1
+       rms(reference)=0.994477  abs_tol=9.484e-07 rel_tol=9.537e-07
+       n=262144 max_abs=4.205e-07 max_rel=5.951e-08 normalized=0.049 worst_index=215841 nonfinite=0
+
+11 passed, 0 failed, 0 skipped
+========= ERROR SUMMARY: 0 errors

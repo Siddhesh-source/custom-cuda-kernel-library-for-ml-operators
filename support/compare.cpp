@@ -1,4 +1,4 @@
-#include "tests/support/compare.h"
+#include "support/compare.h"
 
 #include <cmath>
 #include <cstdio>
