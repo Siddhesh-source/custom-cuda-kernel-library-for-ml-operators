@@ -175,6 +175,9 @@ and shared device utilities live in `src/common/`, not copied between operators.
   from nothing, with small examples. Written for someone who knows C++ but has
   never written a GPU kernel. Each idea is tied to a file or a measurement from
   this repository.
+- [Concepts, part 2](docs/concepts2.md) — what we learned measuring, verifying
+  and optimizing: honest timing, percent of peak, tolerances, FP16/BF16,
+  register blocking, reading a profiler, and the practical lessons.
 
 **Reference:**
 
