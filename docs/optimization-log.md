@@ -130,3 +130,68 @@ the `_metrics.csv` files next to them), gpt2s ffn_up 512x3072x768:
 shared-memory loads remove the strided B reads (the conflicts), and a
 register-lighter variant raises occupancy. `AUTO` moves to per-shape dispatch
 once the T4 tile sweep lands.
+
+---
+
+## 2. Matmul: vectorized loads and conflict-free shared memory (`CCML_MATMUL_VECTORIZED`)
+
+**Status:** hypothesis committed; implementation in progress.
+
+### Hypothesis
+
+Entry 1's profile (`profiles/sm_89/matmul/`, gpt2s ffn_up 512x3072x768) names
+two inefficiencies in the shared-memory traffic of REGISTER_TILED:
+
+- **4.7 M load bank conflicts.** For the B operand, a warp's 16 thread
+  columns read `Bs[k][thread_col * 8 + j]`: a stride of 8 floats. That lands
+  them on only 4 of the 32 banks, so the reads serialize 4 ways.
+- **2.1 M store bank conflicts.** When A is staged transposed into
+  `As[k][m]`, rows that are BM = 128 floats apart (a multiple of 32) map to the
+  same bank.
+
+It also issues every access 32 bits at a time: 16 scalar shared loads per
+k-step, and scalar global loads.
+
+**Change:** four things, all serving one goal (fewer, wider, conflict-free
+memory instructions):
+
+1. **Global loads 128 bits wide** (`float4`, or 4 × 16-bit for FP16/BF16) for
+   A and B, when K and N are multiples of 4 and the pointers are aligned.
+   Otherwise the same kernel uses scalar global loads.
+2. **Shared reads 128 bits wide:** a thread's TM values of A and TN values of
+   B come in TM/4 and TN/4 vector loads instead of TM + TN scalar ones.
+3. **B columns split into 4-wide chunks** spaced BN/2 apart, instead of 8
+   contiguous columns per thread. Consecutive threads then read consecutive
+   16-byte chunks, so a warp's B reads are conflict-free.
+4. **A tile padded by 4 floats per row** (`As[BK][BM + 4]`). The transposed
+   stores then spread over all 32 banks, and row starts stay 16-byte aligned
+   for the vector reads.
+
+**Predictions** (FP32, warm L2; T4 official, sm_89 indicative):
+
+1. Shared-memory bank conflicts (load and store) fall **to near zero**
+   (from 4.7 M and 2.1 M) on the profiled shape.
+2. Shared-load wavefronts fall **from 11.8 M to about 6 M or fewer**.
+3. Large shapes get **1.2–1.6x faster than REGISTER_TILED**, reaching
+   **45–60% of peak**. Occupancy is unchanged (registers are similar, about
+   2 blocks/SM), so the gain comes only from fewer memory instructions.
+4. Decode shapes (M <= 16) **barely change**: they are limited by idle block
+   rows, not by load width.
+
+**What would falsify it:** conflicts remaining, which would mean the chunked
+mapping is wrong, or no speedup despite fewer conflicts, which would mean the
+kernel is now limited by occupancy (31% of warps active) rather than memory
+instructions. Either result decides whether the next step attacks occupancy or
+latency (double buffering).
+
+### Change
+
+*(pending)*
+
+### Evidence
+
+*(pending)*
+
+### Verdict
+
+*(pending)*
