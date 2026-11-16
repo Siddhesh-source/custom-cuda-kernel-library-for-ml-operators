@@ -23,6 +23,8 @@ namespace ccml_bench {
  *   --impls a,b     only these implementations (ccml, cublas, cublaslt, cudnn)
  *   --naive-max-gflop X   matmul: skip the naive kernel above X GFLOP per call
  *                   (its rows are reported NOT_RUN)
+ *   --tile-sweep    matmul: also time every REGISTER_TILED tile configuration
+ *                   (reference.md section 5, tile and block size sweep)
  */
 struct Options {
   std::string  shapes;
@@ -33,6 +35,7 @@ struct Options {
   bool         cold = true;
   std::string  impls;              /* empty = all */
   double       naive_max_gflop = 0.0;  /* 0 = no limit */
+  bool         tile_sweep = false;
   TimingConfig timing;
 
   bool wants(const std::string& impl) const;

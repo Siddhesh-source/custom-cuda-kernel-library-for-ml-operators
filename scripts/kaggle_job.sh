@@ -63,12 +63,14 @@ run_op() {
   step "device peaks (this session's GPU)"
   "$BIN/ccml_bench_peaks" --out "$peaks"
 
-  if has_impl ccml || has_impl cublas || has_impl cudnn; then
+  if has_impl ccml || has_impl ccml_tiles || has_impl cublas || has_impl cublaslt || has_impl cudnn; then
     step "C++ bench: $op"
     local extra=()
     # The naive matmul is ~20x slower than cuBLAS; above 5 GFLOP per call it
     # adds tens of minutes and no information (rows say NOT_RUN).
-    [ "$op" = "matmul" ] && extra=(--naive-max-gflop 5)
+    # Matmul also times every REGISTER_TILED tile configuration (reference.md
+    # section 5: tile and block size sweep).
+    [ "$op" = "matmul" ] && extra=(--naive-max-gflop 5 --tile-sweep)
     [ "$IMPLS" != "all" ] && extra+=(--impls "$IMPLS")
     "$BIN/ccml_bench_$op" --peaks "$peaks" --out "$RES/$op.csv" "${extra[@]}" \
       2> "$OUT/logs/bench_$op.log"

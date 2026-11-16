@@ -133,6 +133,127 @@ __global__ void matmul_tiled(T*       C,
   }
 }
 
+/*
+ * Register-blocked (docs/optimization-log.md, entry 1).
+ *
+ * A block computes a BM x BN tile of C with (BM/TM) * (BN/TN) threads; each
+ * thread owns a TM x TN patch held in registers. Per k-step of BK the block
+ * stages a BM x BK slice of A and a BK x BN slice of B in shared memory, and
+ * then, for each of the BK columns, every thread loads TM values of A and TN
+ * values of B into registers and does TM * TN FMAs from them. Each shared-memory
+ * value is therefore reused TM or TN times from a register instead of being
+ * re-read per FMA.
+ *
+ * The A slice is stored transposed (As[k][m]) so that, for a given k, the TM
+ * values a thread needs are contiguous. That makes the transposing store
+ * strided across banks; it is left as it is here, because removing it is a
+ * separate step (vectorized loads, Phase 10) and this step must change one
+ * thing only.
+ *
+ * Edges: out-of-range elements are zero-filled when staged and the store is
+ * guarded, so every thread reaches every barrier and no dimension needs to be
+ * a multiple of any tile.
+ *
+ *   grid  = (div_up(N, BN), div_up(M, BM))
+ *   block = ((BM / TM) * (BN / TN))
+ */
+template <typename T, int BM, int BN, int BK, int TM, int TN>
+__global__ void __launch_bounds__((BM / TM) * (BN / TN))
+matmul_register_tiled(T* C, const T* A, const T* B, int M, int N, int K) {
+  using ccml::detail::to_float;
+  constexpr int kCols = BN / TN;             /* threads along N */
+  constexpr int kThreads = (BM / TM) * kCols;
+  static_assert(BM % TM == 0 && BN % TN == 0, "tile must divide the block tile");
+
+  __shared__ float As[BK][BM];  /* transposed: As[k][m] */
+  __shared__ float Bs[BK][BN];
+
+  const int tid = static_cast<int>(threadIdx.x);
+  const int thread_row = tid / kCols;
+  const int thread_col = tid % kCols;
+  const int block_row = static_cast<int>(blockIdx.y) * BM;
+  const int block_col = static_cast<int>(blockIdx.x) * BN;
+
+  float acc[TM][TN];
+#pragma unroll
+  for (int i = 0; i < TM; ++i) {
+#pragma unroll
+    for (int j = 0; j < TN; ++j) acc[i][j] = 0.0f;
+  }
+  float a_reg[TM];
+  float b_reg[TN];
+
+  for (int k0 = 0; k0 < K; k0 += BK) {
+    /* Stage A[block_row : +BM, k0 : +BK], transposed. Consecutive threads take
+       consecutive k within a row, so global reads are contiguous per row. */
+    for (int i = tid; i < BM * BK; i += kThreads) {
+      const int r = i / BK;
+      const int c = i % BK;
+      const int gr = block_row + r;
+      const int gc = k0 + c;
+      As[c][r] = (gr < M && gc < K) ? to_float(A[static_cast<long long>(gr) * K + gc]) : 0.0f;
+    }
+    /* Stage B[k0 : +BK, block_col : +BN]. Consecutive threads take consecutive
+       columns: coalesced. */
+    for (int i = tid; i < BK * BN; i += kThreads) {
+      const int r = i / BN;
+      const int c = i % BN;
+      const int gr = k0 + r;
+      const int gc = block_col + c;
+      Bs[r][c] = (gr < K && gc < N) ? to_float(B[static_cast<long long>(gr) * N + gc]) : 0.0f;
+    }
+    __syncthreads();
+
+#pragma unroll
+    for (int k = 0; k < BK; ++k) {
+#pragma unroll
+      for (int i = 0; i < TM; ++i) a_reg[i] = As[k][thread_row * TM + i];
+#pragma unroll
+      for (int j = 0; j < TN; ++j) b_reg[j] = Bs[k][thread_col * TN + j];
+#pragma unroll
+      for (int i = 0; i < TM; ++i) {
+#pragma unroll
+        for (int j = 0; j < TN; ++j) acc[i][j] += a_reg[i] * b_reg[j];
+      }
+    }
+    /* Before the next iteration overwrites the slices. */
+    __syncthreads();
+  }
+
+#pragma unroll
+  for (int i = 0; i < TM; ++i) {
+    const int r = block_row + thread_row * TM + i;
+    if (r >= M) continue;
+#pragma unroll
+    for (int j = 0; j < TN; ++j) {
+      const int c = block_col + thread_col * TN + j;
+      if (c < N) {
+        C[static_cast<long long>(r) * N + c] = ccml::detail::from_float<T>(acc[i][j]);
+      }
+    }
+  }
+}
+
+/*
+ * The tile configurations REGISTER_TILED can run, for the tile-size sweep
+ * (reference.md §5) and later the measured dispatch table (enhancement S4).
+ * Index 0 is the default. Defaults are NOT tuned yet: the sweep decides.
+ */
+struct MatmulTileConfig {
+  int bm, bn, bk, tm, tn;
+};
+
+constexpr MatmulTileConfig kMatmulTileConfigs[] = {
+    {128, 128, 8, 8, 8},  /* 0: default, the hypothesis in the optimization log */
+    {128, 64, 8, 8, 4},   /* 1 */
+    {64, 64, 8, 4, 4},    /* 2 */
+    {64, 128, 8, 4, 8},   /* 3 */
+    {32, 64, 16, 4, 4},   /* 4: smaller BM for short M */
+    {16, 128, 16, 2, 8},  /* 5: decode-sized M */
+};
+constexpr int kMatmulTileConfigCount =
+    static_cast<int>(sizeof(kMatmulTileConfigs) / sizeof(kMatmulTileConfigs[0]));
+
 }  // namespace kernels
 }  // namespace ccml
 

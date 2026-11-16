@@ -15,7 +15,7 @@ namespace {
                "[--cache warm|cold|both] [--filter TEXT]\n"
                "       [--warmup N] [--max-iters N] [--min-iters N] "
                "[--budget-ms X] [--rounds N]\n"
-               "       [--impls a,b] [--naive-max-gflop X]\n",
+               "       [--impls a,b] [--naive-max-gflop X] [--tile-sweep]\n",
                why);
   std::exit(2);
 }
@@ -49,6 +49,7 @@ Options parse_options(int argc, char** argv) {
     else if (arg == "--rounds") o.timing.rounds = std::atoi(value().c_str());
     else if (arg == "--impls") o.impls = value();
     else if (arg == "--naive-max-gflop") o.naive_max_gflop = std::atof(value().c_str());
+    else if (arg == "--tile-sweep") o.tile_sweep = true;
     else usage(("unknown argument " + arg).c_str());
   }
   if (o.timing.min_iters < 100) {

@@ -6,6 +6,7 @@
 #include "ccml/matmul.h"
 #include "ccml/memory.h"
 #include "ccml/status.h"
+#include "ccml/tuning.h"
 #include "support/device_buffer.h"
 #include "support/random.h"
 #include "support/compare.h"
@@ -170,4 +171,88 @@ CCML_TEST(matmul, wide_and_thin) {
   run_case(ctx, 1, 512, 512, CCML_MATMUL_TILED, 920);
   run_case(ctx, 512, 1, 512, CCML_MATMUL_TILED, 921);
   run_case(ctx, 512, 512, 1, CCML_MATMUL_TILED, 922);
+}
+
+/* ------------------------------------------- added with register blocking -- */
+
+/* Every tile configuration of REGISTER_TILED, on shapes chosen so that no
+   dimension is a multiple of any block or thread tile, plus the degenerate
+   ones (a single row, a single column, K = 1). A configuration that only
+   works on friendly shapes is wrong. */
+CCML_TEST(matmul, register_tiled_every_config_on_awkward_shapes) {
+  const int shapes[][3] = {{1, 1, 1},     {1, 512, 512}, {512, 1, 512},  {512, 512, 1},
+                           {17, 33, 65},  {131, 67, 97}, {128, 128, 128}, {255, 257, 129},
+                           {3, 768, 768}, {1000, 1000, 33}, {2047, 129, 513}};
+  const int configs = ccml_matmul_tile_config_count();
+  ctx.check(configs >= 1, "at least one tile configuration");
+
+  for (int index = 0; index < configs; ++index) {
+    ccml_matmul_tile_config cfg;
+    CCML_ASSERT_OK(ccml_matmul_tile_config_get(index, &cfg));
+    double worst_normalized = 0.0;
+    for (const auto& shape : shapes) {
+      const int M = shape[0], N = shape[1], K = shape[2];
+      std::vector<float> host_a(static_cast<std::size_t>(M) * K);
+      std::vector<float> host_b(static_cast<std::size_t>(K) * N);
+      Rng rng(1000 + static_cast<std::uint64_t>(index) * 97 + M + N + K);
+      rng.normal(host_a.data(), host_a.size(), 0.0f, 1.0f);
+      rng.normal(host_b.data(), host_b.size(), 0.0f, 1.0f);
+      std::vector<double> expected;
+      ccml_test::matmul_reference(expected, host_a, host_b, M, N, K);
+
+      DeviceBuffer a(host_a.size()), b(host_b.size()), c(static_cast<std::size_t>(M) * N);
+      a.upload(host_a.data());
+      b.upload(host_b.data());
+      /* Poison: an element the kernel fails to write cannot pass. */
+      CCML_ASSERT_OK(ccml_device_memset_async(c.data(), 0xFF, c.bytes(), nullptr));
+      CCML_ASSERT_OK(ccml_matmul_register_tiled_f32(c.data(), a.data(), b.data(), M, N, K,
+                                                    index, nullptr));
+      CCML_ASSERT_OK(ccml_device_synchronize());
+      std::vector<float> got(c.count());
+      c.download(got.data());
+
+      const ccml_test::Tolerance tol =
+          ccml_test::tolerance_for_f32_dot_product(K, ccml_test::rms(expected));
+      const ccml_test::ErrorStats stats = ccml_test::compare(got, expected, tol);
+      worst_normalized = std::fmax(worst_normalized, stats.max_normalized_error);
+      if (!ccml_test::within(stats)) {
+        ctx.fail("config " + std::to_string(index) + " (" + std::to_string(cfg.bm) + "x" +
+                 std::to_string(cfg.bn) + "x" + std::to_string(cfg.bk) + ", " +
+                 std::to_string(cfg.tm) + "x" + std::to_string(cfg.tn) + ") failed at M=" +
+                 std::to_string(M) + " N=" + std::to_string(N) + " K=" + std::to_string(K) +
+                 " -- " + stats.to_string());
+      }
+    }
+    ctx.note("config " + std::to_string(index) + " " + std::to_string(cfg.bm) + "x" +
+             std::to_string(cfg.bn) + "x" + std::to_string(cfg.bk) + " thread " +
+             std::to_string(cfg.tm) + "x" + std::to_string(cfg.tn) + " (" +
+             std::to_string(cfg.threads) + " threads): worst normalized error " +
+             std::to_string(worst_normalized));
+  }
+}
+
+CCML_TEST(matmul, register_tiled_through_the_algo_enum) {
+  run_case(ctx, 128, 768, 768, CCML_MATMUL_REGISTER_TILED, 930);
+  run_case(ctx, 131, 67, 97, CCML_MATMUL_REGISTER_TILED, 931);
+  run_case(ctx, 1, 2304, 768, CCML_MATMUL_REGISTER_TILED, 932);
+  run_case(ctx, 256, 96, 2048, CCML_MATMUL_REGISTER_TILED, 933);
+}
+
+CCML_TEST(matmul, tile_config_api_rejects_bad_input) {
+  ccml_matmul_tile_config cfg;
+  ctx.check(ccml_matmul_tile_config_get(-1, &cfg) == CCML_ERROR_INVALID_ARGUMENT, "index -1");
+  ctx.check(ccml_matmul_tile_config_get(ccml_matmul_tile_config_count(), &cfg) ==
+                CCML_ERROR_INVALID_ARGUMENT,
+            "index == count");
+  ctx.check(ccml_matmul_tile_config_get(0, nullptr) == CCML_ERROR_INVALID_ARGUMENT, "null out");
+  DeviceBuffer d(4);
+  ctx.check(ccml_matmul_register_tiled_f32(d.data(), d.data(), d.data(), 2, 2, 1,
+                                           ccml_matmul_tile_config_count(), nullptr) ==
+                CCML_ERROR_INVALID_ARGUMENT,
+            "config index out of range is rejected, not clamped");
+  for (int i = 0; i < ccml_matmul_tile_config_count(); ++i) {
+    CCML_ASSERT_OK(ccml_matmul_tile_config_get(i, &cfg));
+    ctx.check(cfg.threads == (cfg.bm / cfg.tm) * (cfg.bn / cfg.tn) && cfg.threads <= 1024,
+              "thread count consistent and launchable");
+  }
 }

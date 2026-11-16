@@ -1,2 +1,7 @@
-# Shell scripts run on Kaggle (Linux); CRLF would break bash.
-*.sh text eol=lf
+# LF everywhere: shell scripts run on Kaggle (Linux), and mixed endings made
+# exact-match edits and diffs unreliable on Windows.
+* text=auto eol=lf
+*.ps1 text eol=crlf
+*.png binary
+*.ncu-rep binary
+*.nsys-rep binary
