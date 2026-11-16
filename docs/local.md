@@ -26,6 +26,16 @@ local-only: the spec requires the *same* clocks within a comparison, and the
 harness records clocks per row and flags drift. Locking clocks locally is
 optional.
 
+## When each item is needed
+
+| Phase | Local items |
+|---|---|
+| 7, 8, 14 | none |
+| **9** | L3 Nsight Compute. **Reboot before this phase** |
+| 10 | L3 + L2 `cp.async` |
+| 11 | L1 BF16 Tensor Cores + L3 |
+| 12, 13, 15, 16 | L3 |
+
 ## Local setup: one time
 
 **Status (2026-11-16): done, except for one reboot.**

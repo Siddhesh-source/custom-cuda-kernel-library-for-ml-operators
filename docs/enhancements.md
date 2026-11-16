@@ -4,7 +4,7 @@ These additions go beyond the minimum that [`reference.md`](reference.md)
 requires. Each one is chosen because it plausibly improves a measured result or
 makes the results more trustworthy. The rules:
 
-1. **Additive only.** An enhancement starts only after that week's required items pass.
+1. **Additive only.** An enhancement starts only after the phase's required items pass.
 2. **Hypothesis first.** Each is logged in `docs/optimization-log.md` with its
    predicted effect and mechanism. It is kept or reverted on measurement, and a
    failure is still logged.

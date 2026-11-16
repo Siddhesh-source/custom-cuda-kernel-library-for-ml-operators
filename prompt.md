@@ -17,9 +17,9 @@ Obey CLAUDE.md. docs/reference.md is binding. Read docs/ROADMAP.md §{n} only. T
 
 ---
 
-## Phase 7 · Environment, shapes, harness, baselines (week 1)
+## Phase 7 · Environment, shapes, harness, baselines
 ```
-GOAL: Phase 7 per docs/ROADMAP.md §3 Week 1.
+GOAL: Phase 7 per docs/ROADMAP.md §3.
 SPEC: reference.md Setup, Method, §3 shape list + harness, §4 baselines.
 DO:
 1. scripts/setup_env.{sh,ps1}: verify nvidia-smi/nvcc/ncu/nsys, create .venv, CUDA torch + triton numpy pandas matplotlib pytest; print versions.
@@ -34,7 +34,7 @@ ACCEPT: build -Werror clean; all ctest pass; sanitizer 0 errors; CSV has all col
 OUT: files changed (1 line each), test/sanitizer totals, blockers. Commit+push.
 ```
 
-## Phase 8 · Multiple dtypes and naive kernels (week 2)
+## Phase 8 · Multiple dtypes and naive kernels
 ```
 GOAL: FP16 + BF16 for all 3 ops, naive variants, fp64-reference correctness.
 SPEC: reference.md §3 correctness suite, §9 "all kernels pass for each dtype".
@@ -47,7 +47,8 @@ ACCEPT: every op x dtype x shape passes (BF16 skipped only on sm<80, reported as
 OUT: pass/fail/skip table per op x dtype; worst errors. Commit+push.
 ```
 
-## Matmul optimization step (reuse for every rung; weeks 3–5)
+## Phases 9–11 · Matmul optimization step (reuse for every rung)
+Rungs: Phase 9 REGISTER_TILED · Phase 10 VECTORIZED, DOUBLE_BUFFERED · Phase 11 WMMA, MMA_SYNC. Requires the counter-enabling reboot (docs/local.md) before Phase 9.
 ```
 GOAL: Add matmul variant {REGISTER_TILED|VECTORIZED|DOUBLE_BUFFERED|WMMA|MMA_SYNC} as one isolated step.
 SPEC: reference.md §3 matmul ladder; §5 tile sweep, vectorized vs scalar, occupancy vs regs; §9 NCU evidence.
@@ -56,13 +57,13 @@ DO:
 2. Implement in src/matmul/matmul_kernels.cuh, templated on tile params; add algo enum + dispatch case. Previous rungs untouched.
 3. Tests: all shapes x dtypes in tests/test_matmul.cpp pass + sanitizer clean.
 4. Sweep tile configs on target shapes; keep top-3.
-5. ncu --set full on 2 representative shapes (one target, one skinny) for prev rung vs new -> profiles/matmul/<algo>_<shape>.ncu-rep; extract occupancy, mem throughput, top-3 stall reasons, regs/thread.
+5. LOCAL (docs/local.md L3; scripts/local_build.ps1 first): ncu --set full on 2 representative shapes (one target, one skinny) for prev rung vs new -> profiles/matmul/<algo>_<shape>.ncu-rep; extract occupancy, mem throughput, top-3 stall reasons, regs/thread.
 6. Bench vs previous rung, cuBLAS, torch eager, torch.compile.
 ACCEPT: tests+sanitizer green; log entry has hypothesis, NCU deltas, median+CI, %peak, verdict (kept/reverted).
 OUT: 5-line table {shape, prev µs, new µs, cuBLAS µs, %peak}. Commit+push.
 ```
 
-## Tensor Cores and scheduling enhancements (week 5)
+## Phase 11 · Tensor Cores and scheduling enhancements
 ```
 GOAL: FP16 WMMA then mma.sync m16n8k8+ldmatrix with register-prefetch pipeline (T4); then S1 swizzle, S2 split-K/stream-K, F1 fused epilogue. BF16 TC + cp.async variants: implement, compile-check for sm_80, leave the run to docs/local.md.
 SPEC: reference.md §3 (Tensor Cores), §9 table vs cuBLAS, §11 focus skinny/fused shapes. docs/enhancements.md S1,S2,F1.
@@ -71,7 +72,7 @@ ACCEPT: shape-by-shape table vs cuBLAS in docs/results/phase-11-*.md, wins AND l
 OUT: shapes where we win (with CI), shapes where we lose and why (NCU-backed).
 ```
 
-## Phase 12 · Layernorm (week 6)
+## Phase 12 · Layernorm
 ```
 GOAL: Layernorm variants WARP_PER_ROW, WELFORD, VECTORIZED (128-bit), FUSED_RESIDUAL_BIAS (y=LN(x+res+bias), also writes sum); persistent variant S3.
 SPEC: reference.md §3 layernorm; §5 fusion vs separate, vectorized vs scalar.
@@ -80,7 +81,7 @@ ACCEPT: all dtypes pass; GB/s + %peak BW reported; fusion vs separate table.
 OUT: best variant per cols bucket with %peak BW. Commit+push.
 ```
 
-## Phase 13 · Softmax (week 7)
+## Phase 13 · Softmax
 ```
 GOAL: Softmax WARP_PER_ROW (short rows, register-resident), ONLINE (single pass running max/sum), FUSED_SCALE_MASK (scale + additive/causal mask), block-per-row for long rows (vocab 32000/50257), persistent S3.
 SPEC: reference.md §3 softmax; §5 fusion experiment.
@@ -89,7 +90,7 @@ ACCEPT: all dtypes pass; rows sum to 1 within tol; GB/s + %peak; fused vs separa
 OUT: best variant per cols bucket. Commit+push.
 ```
 
-## Phase 14 · PyTorch extension and model integration (week 8)
+## Phase 14 · PyTorch extension and model integration
 ```
 GOAL: torch.utils.cpp_extension binding usable in a real model; end-to-end latency.
 SPEC: reference.md §3 PyTorch extension, §5 end-to-end model latency, §9 bindings usable in a model.
@@ -103,7 +104,7 @@ ACCEPT: pytest green; parity within tolerance; latency table committed.
 OUT: latency table + parity numbers. Commit+push.
 ```
 
-## Phase 15 · Full sweep, ablations, roofline (week 9)
+## Phase 15 · Full sweep, ablations, roofline
 ```
 GOAL: All R§5 experiments + roofline.
 SPEC: reference.md §5 all seven experiments, §6 metrics, §10 roofline plots.
@@ -112,7 +113,7 @@ ACCEPT: every R§5 experiment has a CSV + plot + 3-line finding in docs/results/
 OUT: list of experiments with one-line finding each.
 ```
 
-## Phase 16 · Freeze, report and demo (week 10)
+## Phase 16 · Freeze, report and demo
 ```
 GOAL: v1.0 freeze.
 SPEC: reference.md §9 definition of done, §10 deliverables.

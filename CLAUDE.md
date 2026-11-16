@@ -4,7 +4,7 @@
 1. `docs/reference.md` is the specification and is binding. Comply with it exactly. Never weaken, skip or reinterpret a clause.
 2. `docs/ROADMAP.md` is the plan, `docs/enhancements.md` holds optional additions, and `docs/PROJECT_OVERVIEW.md` is the summary.
 3. If any other doc, comment or older "out of scope" list conflicts with (1), (1) wins. Fix the conflicting doc.
-4. An enhancement never displaces a required item. Start one only after the week's required items pass.
+4. An enhancement never displaces a required item. Start one only after the phase's required items pass. Work is phase-gated by `prompt.md`, never by calendar.
 
 ## Hard rules
 - Correctness before speed. Never time, report or commit a speed number for a kernel that fails its tests.

@@ -7,7 +7,7 @@ and the other document is wrong. Enhancements (marked **[E]**, detailed in
 [enhancements.md](enhancements.md)) are additive and never displace a
 required item.
 
-Last updated: 2026-11-16. Schedule: 10 weeks, 2026-11-16 → 2027-01-24 [R§8].
+Last updated: 2026-11-16. Progress is **phase-gated, not calendar-based**: each phase runs from its prompt in [`prompt.md`](../prompt.md), and the next starts only when the current one meets its ACCEPT checks. The phase order follows the deliverable sequence of [R§8].
 
 ---
 
@@ -81,13 +81,14 @@ throttle reasons.
 
 ---
 
-## 3. Week-by-week plan (mapped 1:1 to [R§8])
+## 3. Phase plan (order follows [R§8])
 
 Each phase ends with tests in `tests/` and `docs/results/phase-N-*.md`
 (existing workflow). No phase reports a speed number for a kernel failing its
 tests [R§11].
 
-### Week 1 — Phase 7: Environment, shapes, references, harness, baselines
+### Phase 7: Environment, shapes, references, harness, baselines
+*Local: none.*
 - `scripts/setup_env.sh` (runs inside the Kaggle kernel): tool version check (`nvidia-smi`, `nvcc`, `ncu`, `nsys`), `.venv` on top of the image's CUDA PyTorch + `triton numpy pandas matplotlib pytest`. Output → `docs/results/phase-7-env.md`.
 - Create `scripts/`, `profiles/`; `.gitignore` exception for `profiles/**/*.ncu-rep`.
 - **`bench/shapes.json`**: single source of truth for target and odd shapes (§4).
@@ -97,48 +98,57 @@ tests [R§11].
 - Measured peaks: FMA microbench + STREAM-copy microbench → `results/sm_75/peaks.json` **[E-M5]**.
 - **compute-sanitizer** memcheck + racecheck (+ initcheck, synccheck **[E-C1]**) on all existing kernels → `scripts/sanitize.sh`, logs in `results/sm_75/sanitizer/`.
 
-### Week 2 — Phase 8: Multi-dtype foundation + naive kernels
+### Phase 8: Multi-dtype foundation + naive kernels
+*Local: none.*
 - Public API: `ccml_<op>_f16`, `ccml_<op>_bf16` alongside `_f32` (same signature shape, `__half`/`__nv_bfloat16` I/O, FP32 accumulation). BF16 works on all architectures through FP32 math, so it is tested on the T4. Only the BF16 Tensor Core variants are gated to sm_80+.
 - Naive kernels for all three ops in all three dtypes.
 - Correctness vs **PyTorch float64** reference with explicit per-dtype tolerances [R§3] — table committed in `docs/correctness.md`. Starting policy (to be justified by measured error): FP32 `atol 1e-5, rtol 1e-5`; FP16 `atol 1e-3, rtol 1e-2`; BF16 `atol 1e-2, rtol 5e-2`; matmul tolerance scaled by `sqrt(K)`.
 - Report max abs and max rel error per test [R§6].
 
-### Week 3 — Phase 9: Matmul — smem tiling (exists) + register blocking
+### Phase 9: Matmul — smem tiling (exists) + register blocking
+*Local: **L3 Nsight Compute**. The reboot that enables counters must be done before this phase.*
 - `REGISTER_TILED`: block tile BM×BN×BK, thread tile TM×TN (start 128×128×8, 8×8), templated. Tile sweep [R§5].
 - NCU before/after; speedup vs previous rung recorded in `docs/optimization-log.md`.
 
-### Week 4 — Phase 10: Matmul — float4 + double buffering + first NCU analysis
+### Phase 10: Matmul — float4 + double buffering + first NCU analysis
+*Local: L3 Nsight Compute and **L2 `cp.async`** variant.*
 - `VECTORIZED` (float4 / 128-bit loads, transposed A in smem, padding/swizzle for bank conflicts).
 - `DOUBLE_BUFFERED` (register-prefetch double buffering, which works on the T4). The `cp.async` multistage version needs sm_80+ and is in [local.md](local.md).
 - Experiment: vectorized vs scalar [R§5]. NCU: achieved occupancy, memory throughput, warp stall reasons [R§6] → `profiles/matmul/`.
 
-### Week 5 — Phase 11: Matmul — Tensor Cores vs cuBLAS
+### Phase 11: Matmul — Tensor Cores vs cuBLAS
+*Local: **L1 BF16 Tensor Cores** and L3 Nsight Compute.*
 - `WMMA` (FP16 in, FP32 accumulate), then `MMA_SYNC` (`mma.sync` m16n8k8 + `ldmatrix`, register-prefetch pipeline) on the T4. The BF16 Tensor Core variants need sm_80+ and are in [local.md](local.md).
 - **[E-S1]** threadblock swizzle, **[E-S2]** split-K / stream-K for skinny shapes, **[E-F1]** fused bias/GELU/residual epilogue.
 - Shape-by-shape table vs cuBLAS on target shapes [R§9]. Occupancy vs register usage sweep via `__launch_bounds__` [R§5].
 
-### Week 6 — Phase 12: Layernorm — warp shuffle, vectorized, residual fusion
+### Phase 12: Layernorm — warp shuffle, vectorized, residual fusion
+*Local: L3 Nsight Compute.*
 - `WARP_PER_ROW` (cols ≤ 1024), `WELFORD` (single pass, warp-shuffle Welford merge), `VECTORIZED` (128-bit), `FUSED_RESIDUAL_BIAS` (`y = LN(x + residual + bias)`, also writes the pre-norm sum).
 - Resolve open question: cost of fp64 accumulation (measured).
 - Fusion vs separate kernels experiment [R§5].
 
-### Week 7 — Phase 13: Softmax — online and fused
+### Phase 13: Softmax — online and fused
+*Local: L3 Nsight Compute.*
 - `WARP_PER_ROW` (short rows, register-resident), `ONLINE` (single pass running max/sum, Milakov & Gimelshein 2018), `FUSED_SCALE_MASK` (scale + additive/causal mask), block-per-row for long rows (≥ 4096, e.g. vocab 32000/50257).
 - AUTO dispatch thresholds chosen by measurement **[E-S4]**.
 
-### Week 8 — Phase 14: PyTorch extension + real model
+### Phase 14: PyTorch extension + real model
+*Local: none (optional local CUDA PyTorch only to drive L1 from Python).*
 - `python/ccml_ext/` built with **`torch.utils.cpp_extension`** (`CUDAExtension` + `setup.py`, and JIT `load()` path). Uses PyTorch's current stream, dispatch on dtype, rejects non-contiguous inputs.
 - Register as `torch.library` custom ops with fake/meta impls so **torch.compile can trace through them** **[E-P1]**.
 - Drop-in `nn.Module` replacements (`CcmlLinear`, `CcmlLayerNorm`, `CcmlSoftmax`); swap into a real model (GPT-2 small, 124M, on the Kaggle T4) and measure **end-to-end latency** [R§5]. Logit/perplexity parity check against the unmodified model.
 - ctypes binding kept as the C-ABI test path; cpp_extension is the deliverable.
 
-### Week 9 — Phase 15: Full sweep, ablations, roofline
+### Phase 15: Full sweep, ablations, roofline
+*Local: L3 Nsight Compute for ablation metrics.*
 - Every op × variant × dtype × shape in `bench/shapes.json`, against every baseline [R§4]. Raw CSV committed.
 - Ablations: each optimization turned off individually.
 - Roofline plots per op/dtype with measured and theoretical ceilings (`scripts/roofline.py`, matplotlib) [R§10].
 - **[E-G1]** CUDA Graphs and **[E-G2]** multi-stream results for the transformer block.
 
-### Week 10 — Phase 16: Freeze, report, demo
+### Phase 16: Freeze, report, demo
+*Local: L3 for any missing NCU evidence in the DoD audit.*
 - Tag `v1.0`. `docs/report.md` (technical report), `notebooks/demo.ipynb` (build ext, run correctness, run model with swapped kernels, plot results).
 - Final shape-by-shape comparison table [R§2, R§9] with honest losses [R§11].
 - Definition-of-done audit (§5) with every box linked to evidence.
@@ -186,10 +196,10 @@ shapes arrive.
 
 | Risk | Mitigation |
 |---|---|
-| Kaggle quota (~30 GPU-h/week) | Batch each phase into one kernel run; compile-only check with `--no-gpu` first |
+| Kaggle GPU quota (~30 h, resets weekly) | Batch each phase into one kernel run; compile-only check with `--no-gpu` first |
 | Kaggle queue delays | `--push` and fetch later; never block the work on one run |
 | Nsight Compute counters unavailable on Kaggle (confirmed) | Local GPU for `profiles/` evidence only (local.md L3); timings stay on the T4 |
 | T4 pin queues for a long time (seen 2026-11-16: 45+ min) | `kaggle_run.py --any-gpu` drops the pin; the log records the actual GPU and a non-T4 run is filed by its own arch |
 | Clocks cannot be locked | Record clocks, temperature and throttle reasons per row; interleave variants; reject throttled samples **[E-M3]** |
 | No win vs cuBLAS | Focus on skinny/decode and fused ops; R§9 allows a documented explanation |
-| Enhancements eat schedule | Enhancements start only after the week's required items pass |
+| Enhancements crowd out required work | An enhancement starts only after the phase's required items pass |
