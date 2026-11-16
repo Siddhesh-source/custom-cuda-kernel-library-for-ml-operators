@@ -35,7 +35,9 @@ ctest --preset default -R <op>
 Hardware: **every GPU task runs on a Kaggle T4 (sm_75)** via `cloud/kaggle/`. Credentials are already configured. Batch the work into one kernel run per phase to save quota. Only the items in `docs/local.md` need a local GPU; never plan local work outside that list. The local machine cannot build CUDA (no Windows SDK) and its PyTorch is CPU-only.
 
 ## Git
-- Commit and push using the repo's configured git identity (`Siddhesh-source`). Push to `origin main` after every commit.
+- **Branches:** `main` holds only finished work and receives exactly one merge, `dev` → `main`, when the whole project is complete. `dev` is the integration branch. All work happens on a **task branch** cut from `dev`. A task branch may cover one or several phases, and it is merged back into `dev` once its phases pass ACCEPT.
+- **Branch names describe the task, never the phase number**: e.g. `measurement-infrastructure`, `matmul-register-tiling`, `rowwise-fusion`. Never `phase-7` or `p9-10`.
+- Commit and push using the repo's configured git identity (`Siddhesh-source`). Push the current task branch after every commit. Never commit directly to `main`.
 - **No attribution or watermark lines**: no `Co-Authored-By`, no "Generated with", no AI mentions in commits, PRs or code.
 - Commit messages are imperative and scoped, for example `matmul: add register-blocked kernel (8x8 thread tile)`.
 
