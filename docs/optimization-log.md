@@ -1803,3 +1803,40 @@ passes.
 3. Instructions at least 2x fewer, no barrier stalls: **not measured yet**
    (NCU declined); open.
 4. Correct on every case, both paths: **met.**
+
+---
+
+## 15. Softmax: a long row split across blocks (`CCML_SOFTMAX_SPLIT_ROW`)
+
+**Status:** hypothesis committed before the code.
+
+### Hypothesis
+
+Vocabulary softmax at decode time is a few very long rows: 1-16 rows of
+30522-50257 columns. ONLINE gives each row one block, so one row runs on one
+SM: on sm_89 1 x 50257 takes 45 us at 9 GB/s, and NCU shows 19% of warp slots
+active for 16 rows. On the T4 (40 SMs) a single row uses 2.5% of the GPU.
+cuDNN takes 13-18 us for one row on the T4 (Phase 7).
+
+**Change:** `CCML_SOFTMAX_SPLIT_ROW`: each row is cut into S segments, S
+chosen so that rows x S >= 2 x SMs with segments of at least 2048 elements.
+- Kernel 1, grid (S, rows): each block computes the ONLINE (max, sum) of its
+  segment and writes the pair to a [rows][S] FP32 workspace.
+- Kernel 2, same grid: each block merges its row's S pairs **in fixed order**
+  (deterministic, no atomics) and writes exp(x - m) / s for its segment.
+- Workspace from `cudaMallocAsync` on the caller's stream, as split-K (entry
+  6). The row is read twice (once per kernel; the second read of a segment is
+  likely an L2 hit) and written once; the merge reads 8 x S bytes per row.
+
+**Predictions** (FP32 and FP16, warm L2; Kaggle official):
+
+1. rows = 1, cols 30522-50257: **at least 4x faster than ONLINE**.
+2. rows = 16: **at least 2x faster**; rows = 128 (128 blocks already cover the
+   GPU): no gain, possibly a small loss to the second launch.
+3. Correct on every case and the special-values policy (a row whose segments
+   are all -inf except one; an all -inf row split across segments), and
+   bitwise deterministic.
+
+**What would falsify it:** under 2x at one row, which would mean the second
+kernel and the workspace cost as much as the parallelism wins at these
+sizes (a 50257-element FP32 row is only 200 KB).
