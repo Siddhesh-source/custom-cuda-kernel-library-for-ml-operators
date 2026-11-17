@@ -33,7 +33,13 @@ def main() -> int:
     d = pd.concat([pd.read_csv(a.ccml_csv, comment="#"), pd.read_csv(a.torch_csv, comment="#")])
     d = d[(d.dtype == a.dtype) & (d.cache == a.cache)]
     passed = d[d.gate == "PASS"]
-    counts = {"WIN": 0, "LOSS": 0, "TIE": 0}
+    # CLAUDE.md: comparisons use the same clocks. The T4 drops SM clocks under
+    # its 70 W cap, so a CI win whose baseline ran at a clock more than 5%
+    # below ccml's counts only if it survives clock normalization (baseline
+    # time x baseline clock / ccml clock; conservative for memory-bound
+    # kernels, as in phase-11-tensor-cores.md); otherwise it is CLOCK.
+    # Losses are never excused by clocks: they are reported raw.
+    counts = {"WIN": 0, "LOSS": 0, "TIE": 0, "CLOCK": 0}
     ratios, rows, best_by_bucket = [], [], {}
     for tag, x in passed.groupby("tag", sort=False):
         o = x[x.impl == "ccml"]
@@ -44,18 +50,21 @@ def main() -> int:
         b = b.loc[b.median_us.idxmin()]
         verdict = ("WIN" if o.ci95_hi_us < b.ci95_lo_us else
                    "LOSS" if b.ci95_hi_us < o.ci95_lo_us else "TIE")
+        oc, bc = float(o.sm_clock_mhz), float(b.sm_clock_mhz)
+        if verdict == "WIN" and bc > 0 and oc / bc > 1.05:
+            verdict = "WIN" if b.median_us * bc / oc > o.median_us else "CLOCK"
         counts[verdict] += 1
         r = b.median_us / o.median_us
         ratios.append(r)
         best_by_bucket.setdefault((bucket(int(o.cols)), int(o.rows) <= 16), []).append(o.algo)
         rows.append(f"| {tag} | {int(o.rows)} x {int(o.cols)} | {o.algo} | {o.median_us:.1f} | "
                     f"{o.gbps:.0f} | {o.pct_peak_measured:.0f}% | {b.impl} {b.algo} | "
-                    f"{b.median_us:.1f} | {r:.2f}x | {verdict} |")
+                    f"{b.median_us:.1f} | {r:.2f}x | {verdict} | {int(o.sm_clock_mhz)}/{int(b.sm_clock_mhz)} |")
     failed = d[(d.gate == "FAIL")]
     if a.table:
         print("| shape | rows x cols | best ccml | us | GB/s | % measured peak | best baseline | "
-              "us | baseline/ccml | verdict (95% CI) |")
-        print("|---|---|---|---|---|---|---|---|---|---|")
+              "us | baseline/ccml | verdict (95% CI) | SM MHz ccml/base |")
+        print("|---|---|---|---|---|---|---|---|---|---|---|")
         print("\n".join(rows))
     print(f"{a.dtype} {a.cache}: " + ", ".join(f"{k} {v}" for k, v in counts.items())
           + (f"; median baseline/ccml {st.median(ratios):.2f}x" if ratios else "")

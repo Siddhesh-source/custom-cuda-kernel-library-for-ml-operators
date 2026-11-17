@@ -26,8 +26,15 @@ ccml_status validate(const Public* y, const Public* x, int rows, int cols) {
   return CCML_SUCCESS;
 }
 
-ccml_softmax_algo resolve(ccml_softmax_algo algo) {
-  return (algo == CCML_SOFTMAX_AUTO) ? CCML_SOFTMAX_BLOCK_PER_ROW : algo;
+/* AUTO (enhancement S4), from the Kaggle T4 run at commit 01c3555
+   (results/sm_75/softmax_variants/, docs/results/phase-13-softmax.md): the
+   best variant per column bucket was WARP_PER_ROW for every shape with
+   cols <= 1024 (17 of 17, all dtypes), and ONLINE or SPLIT_ROW above; SPLIT_ROW
+   runs ONLINE itself whenever the row count already fills the GPU, so it
+   covers both. */
+ccml_softmax_algo resolve(ccml_softmax_algo algo, int cols) {
+  if (algo != CCML_SOFTMAX_AUTO) return algo;
+  return cols <= 1024 ? CCML_SOFTMAX_WARP_PER_ROW : CCML_SOFTMAX_SPLIT_ROW;
 }
 
 /* Warp per row (entry 14). */
@@ -140,7 +147,7 @@ ccml_status softmax(Public* y_pub, const Public* x_pub, int rows, int cols,
   T* y = ccml::detail::device_ptr(y_pub);
   const T* x = ccml::detail::device_ptr(x_pub);
 
-  switch (resolve(algo)) {
+  switch (resolve(algo, cols)) {
     case CCML_SOFTMAX_BLOCK_PER_ROW: {
       /* One block per row. A row count above the device's grid limit is caught
          by validate_launch inside CCML_LAUNCH and reported as such, rather than
