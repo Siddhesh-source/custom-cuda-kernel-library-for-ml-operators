@@ -1709,3 +1709,47 @@ both.
 Short rows remain slow (128-512 columns: 30-60 GB/s, FP32): 256-thread blocks
 on 128-column rows leave half the threads idle and pay two block barriers per
 row; entry 14 (warp per row) is aimed there.
+
+---
+
+## 14. Softmax: warp per row, row resident in registers, 128-bit access (`CCML_SOFTMAX_WARP_PER_ROW`)
+
+**Status:** hypothesis committed before the code.
+
+### Hypothesis
+
+Attention softmax rows are short: cols = the key length, 128-2048 in the
+target shapes, with thousands to tens of thousands of rows. ONLINE (entry 13)
+gives each row a 256-thread block, so a 128-column row leaves half the threads
+idle, pays two block barriers, reads the row twice and evaluates every
+exponential twice. On sm_89 it moves only 30-60 GB/s on 128-512 columns
+against ~115 GB/s on wide rows.
+
+**Change:** `CCML_SOFTMAX_WARP_PER_ROW` (reserved since Phase 3), cols <= 1024
+(wider rows return `CCML_ERROR_UNSUPPORTED_SHAPE`):
+- one warp per row, 4 rows per 128-thread block, no barriers;
+- the row read **once** into registers, 128-bit chunks when cols is a chunk
+  multiple and the pointers are 16-byte aligned, scalar otherwise (the same
+  kernel with a chunk width of 1);
+- max by warp shuffle, then exp(x - max) computed **once** and kept in
+  registers, its sum by warp shuffle, then the write from registers;
+- FP32 throughout, the same -inf / NaN handling as ONLINE.
+
+This deliberately takes two levers in one step, register residency and
+128-bit access, because layer norm's entries 10 and 11 already measured each
+of them separately on this exact structure; re-splitting them would repeat a
+measured experiment, not test a new hypothesis.
+
+**Predictions** (FP32 and FP16, warm L2; Kaggle official, sm_89 NCU):
+
+1. rows >= 1000, cols 128-512: **1.5-3x faster than ONLINE**, reaching at
+   least 80% of measured DRAM bandwidth where the tensor exceeds L2.
+2. cols 1024: **1.1-1.4x** (ONLINE is already near the DRAM peak there).
+3. Nsight Compute: instructions **at least 2x fewer** than ONLINE (one exp per
+   element, no second pass), no barrier stalls.
+4. Correct on every case and the special-values policy, on both the vector
+   and the scalar paths.
+
+**What would falsify it:** no gain at 128-512 columns, which would mean
+ONLINE's short rows were limited by something other than idle threads,
+barriers and the second pass (e.g. the grid being too small).
