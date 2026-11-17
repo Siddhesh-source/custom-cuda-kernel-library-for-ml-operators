@@ -944,3 +944,48 @@ per shape is enhancement S4's measured table).
    (0.99-1.04x, DRAM bytes equal within 9%), **wrong as stated**: I assumed
    every target shape fits 32 MB, and llama1b's FFN at M = 2048 (72 MB) does
    not.
+
+---
+
+## 8. Matmul: fused bias / GELU / residual epilogue (enhancements F1, B2; `ccml_matmul_epilogue_<dtype>`)
+
+**Status:** hypothesis committed before the code.
+
+### Hypothesis
+
+A transformer linear layer is `y = act(x W + b)` (FFN-up, GELU) or
+`y = x W + b + residual` (attention out-projection, FFN-down). With a plain
+matmul, the product C goes to DRAM and an elementwise kernel reads it back,
+reads b (and the residual), and writes y: **C crosses DRAM three times instead
+of once** (write, read, write), plus a second launch. MMA_SYNC's accumulators
+are in registers with a documented layout, so the epilogue can be applied
+there before the single store.
+
+**Change:** `ccml_matmul_epilogue_f16/bf16(C, A, B, bias, residual, M, N, K,
+act, algo, stream)`, `C = act(A B + bias) + residual` (bias [N] or NULL,
+residual [M, N] or NULL, act none / ReLU / GELU-tanh), computed in FP32 on the
+accumulators and rounded once. `algo` = MMA_SYNC (fused in the store) or
+SPLIT_K (fused into the reduction kernel, which already reads every element
+once). Baselines: our MMA_SYNC + a separate epilogue kernel; cuBLAS GemmEx + the
+same separate kernel; **cuBLASLt with its own fused epilogue** (`GELU_BIAS`,
+or `BIAS` with beta = 1 and C = residual) (B2).
+
+**Predictions** (FP16; T4 official):
+
+1. Fused vs our own unfused MMA_SYNC + separate kernel: the saving is the
+   separate kernel's traffic, 2 x M x N (+ M x N residual) 16-bit elements
+   plus one launch. It is largest relative to the matmul when K is small
+   compared with M and N: **1.10-1.30x on M >= 512 FFN-up / attn_out shapes**
+   (K = 768-1024), **1.2-1.6x at decode sizes**, where the extra launch is a
+   large share of 10-30 us.
+2. Fused ccml vs cuBLAS GemmEx + separate kernel: **wins wherever the plain
+   ccml kernel is within ~10% of cuBLAS**, because the vendor path pays the
+   same extra round-trip.
+3. Fused ccml vs cuBLASLt's fused epilogue: **no better than the plain-matmul
+   ratio** (Lt fuses too, so fusion gives no relative advantage against it);
+   wins only where the plain ccml kernel already wins (decode, via split-K).
+
+**What would falsify it:** fused no faster than unfused, which would mean the
+epilogue's extra registers (bias, residual loads in the store path) cost
+occupancy, or that the separate kernel's traffic is hidden in L2 at these
+sizes; NCU (DRAM bytes, registers) decides.
