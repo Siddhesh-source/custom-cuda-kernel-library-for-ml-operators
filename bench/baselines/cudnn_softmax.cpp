@@ -29,13 +29,16 @@ CudnnSoftmax::~CudnnSoftmax() {
   if (handle_ != nullptr) cudnnDestroy(h(handle_));
 }
 
-bool CudnnSoftmax::prepare(int rows, int cols) {
+bool CudnnSoftmax::prepare(int rows, int cols, BlasType type) {
   if (handle_ == nullptr || desc_ == nullptr) return false;
-  return cudnnSetTensor4dDescriptor(d(desc_), CUDNN_TENSOR_NCHW, CUDNN_DATA_FLOAT,
-                                    rows, cols, 1, 1) == CUDNN_STATUS_SUCCESS;
+  const cudnnDataType_t t = type == BlasType::F16    ? CUDNN_DATA_HALF
+                            : type == BlasType::BF16 ? CUDNN_DATA_BFLOAT16
+                                                     : CUDNN_DATA_FLOAT;
+  return cudnnSetTensor4dDescriptor(d(desc_), CUDNN_TENSOR_NCHW, t, rows, cols, 1, 1) ==
+         CUDNN_STATUS_SUCCESS;
 }
 
-bool CudnnSoftmax::run(float* y, const float* x) {
+bool CudnnSoftmax::run(void* y, const void* x) {
   const float alpha = 1.0f, beta = 0.0f;
   return cudnnSoftmaxForward(h(handle_), CUDNN_SOFTMAX_ACCURATE,
                              CUDNN_SOFTMAX_MODE_INSTANCE, &alpha, d(desc_), x,
@@ -47,8 +50,8 @@ bool CudnnSoftmax::run(float* y, const float* x) {
 bool CudnnSoftmax::available() { return false; }
 CudnnSoftmax::CudnnSoftmax(cudaStream_t) {}
 CudnnSoftmax::~CudnnSoftmax() = default;
-bool CudnnSoftmax::prepare(int, int) { return false; }
-bool CudnnSoftmax::run(float*, const float*) { return false; }
+bool CudnnSoftmax::prepare(int, int, BlasType) { return false; }
+bool CudnnSoftmax::run(void*, const void*) { return false; }
 
 #endif
 

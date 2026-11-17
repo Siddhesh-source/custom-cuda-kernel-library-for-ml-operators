@@ -1,4 +1,5 @@
 #include <cmath>
+#include <limits>
 #include <cstdint>
 #include <cstdio>
 #include <string>
@@ -310,6 +311,79 @@ CCML_TEST(softmax, rejects_null_and_nonpositive_dimensions) {
   ctx.check(ccml_softmax_f32(&dummy, &dummy, 1, 0, CCML_SOFTMAX_AUTO, nullptr)
                 == CCML_ERROR_INVALID_ARGUMENT,
             "zero cols should be rejected");
+}
+
+/* ------------------------------------------- every algorithm, every case --- */
+
+const ccml_softmax_algo kAlgos[] = {CCML_SOFTMAX_BLOCK_PER_ROW, CCML_SOFTMAX_ONLINE};
+
+/* Every built algorithm on the shared cases, at the same (relative)
+   tolerance, plus the property checks (outputs in [0, 1], rows sum to 1). */
+CCML_TEST(softmax, every_algorithm_on_every_case) {
+  struct Case {
+    Shape shape;
+    float mean, stddev;
+  };
+  const Case cases[] = {{{8, 1}, 0, 1},       {{8, 7}, 0, 1},       {{8, 33}, 0, 1},
+                        {{33, 517}, 0, 1},    {{17, 1023}, 0, 1},   {{17, 1025}, 0, 1},
+                        {{7, 4097}, 0, 1},    {{4, 16384}, 0, 1},   {{3, 50257}, 0, 1},
+                        {{4099, 128}, 0, 1},  {{16, 256}, 5000, 10}, {{16, 256}, -5000, 10},
+                        {{32, 512}, 0, 30}};
+  for (ccml_softmax_algo algo : kAlgos) {
+    double worst = 0.0;
+    for (const Case& c : cases) {
+      InputOptions o;
+      o.mean = c.mean;
+      o.stddev = c.stddev;
+      worst = std::fmax(worst,
+                        run_case(ctx, c.shape, o, 700 + c.shape.cols, algo).max_normalized_error);
+    }
+    /* +-10000: most terms underflow to zero, the rest must still sum to 1. */
+    const Shape wide{8, 512};
+    std::vector<float> hx(static_cast<std::size_t>(wide.rows) * wide.cols);
+    Rng(520).uniform(hx.data(), hx.size(), -10000.0f, 10000.0f);
+    std::vector<double> ref;
+    ccml_test::softmax_reference(ref, hx, wide.rows, wide.cols);
+    const std::vector<float> got = run_softmax(ctx, hx, wide, algo);
+    check_properties(ctx, got, wide);
+    const ErrorStats st =
+        ccml_test::compare(got, ref, ccml_test::tolerance_for_softmax_f32(wide.cols));
+    ctx.check(ccml_test::within(st), "range +/-10000: " + st.to_string());
+    ctx.note(std::string(ccml_softmax_algo_name(algo)) + ": worst normalized error " +
+             std::to_string(std::fmax(worst, st.max_normalized_error)));
+  }
+}
+
+/* The NaN / -inf policy (docs/correctness.md), for every algorithm: -inf
+   entries give exact zeros, including a LEADING -inf (online softmax's
+   exp(-inf - (-inf)) trap); a row entirely -inf gives NaN; a NaN anywhere
+   gives a NaN row; one dominant element gives exactly 1. */
+CCML_TEST(softmax, special_values_policy) {
+  const float inf = std::numeric_limits<float>::infinity();
+  const int cols = 300;
+  for (ccml_softmax_algo algo : kAlgos) {
+    std::vector<float> hx(static_cast<std::size_t>(5) * cols, 0.5f);
+    for (int c = 0; c < cols; c += 3) hx[static_cast<std::size_t>(c)] = -inf;       /* row 0 */
+    for (int c = 0; c < cols; ++c) hx[static_cast<std::size_t>(cols + c)] = c < 290 ? -inf : 1.0f; /* row 1 */
+    for (int c = 0; c < cols; ++c) hx[static_cast<std::size_t>(2 * cols + c)] = -inf; /* row 2 */
+    hx[static_cast<std::size_t>(3 * cols + 17)] = std::numeric_limits<float>::quiet_NaN(); /* row 3 */
+    for (int c = 0; c < cols; ++c) hx[static_cast<std::size_t>(4 * cols + c)] = -500.0f;
+    hx[static_cast<std::size_t>(4 * cols + 123)] = 500.0f;                            /* row 4 */
+    const std::vector<float> got = run_softmax(ctx, hx, Shape{5, cols}, algo);
+    const std::string a = ccml_softmax_algo_name(algo);
+    for (int c = 0; c < cols; ++c) {
+      const float v0 = got[static_cast<std::size_t>(c)];
+      if (c % 3 == 0) ctx.check(v0 == 0.0f, a + ": -inf entry not exactly 0");
+      else ctx.check(std::fabs(v0 - 1.0f / 200.0f) < 1e-7f, a + ": partial -inf row not uniform");
+      const float v1 = got[static_cast<std::size_t>(cols + c)];
+      ctx.check(c < 290 ? v1 == 0.0f : std::fabs(v1 - 0.1f) < 1e-7f,
+                a + ": leading -inf run mishandled");
+      ctx.check(std::isnan(got[static_cast<std::size_t>(2 * cols + c)]), a + ": all -inf row not NaN");
+      ctx.check(std::isnan(got[static_cast<std::size_t>(3 * cols + c)]), a + ": NaN did not poison row");
+      ctx.check(got[static_cast<std::size_t>(4 * cols + c)] == (c == 123 ? 1.0f : 0.0f),
+                a + ": dominant element not one-hot");
+    }
+  }
 }
 
 CCML_TEST(softmax, warp_per_row_is_reserved_not_silently_substituted) {

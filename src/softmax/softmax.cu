@@ -57,6 +57,13 @@ ccml_status softmax(Public* y_pub, const Public* x_pub, int rows, int cols,
       return CCML_SUCCESS;
     }
 
+    case CCML_SOFTMAX_ONLINE: {
+      const ccml::detail::LaunchConfig config = ccml::detail::rowwise_launch_config(
+          rows, cols, ccml::kernels::kSoftmaxBlockSize);
+      CCML_LAUNCH(ccml::kernels::softmax_online<T>, config, stream, y, x, rows, cols);
+      return CCML_SUCCESS;
+    }
+
     case CCML_SOFTMAX_WARP_PER_ROW:
       ccml::detail::set_last_error(
           (fn_name<Public>() + ": the warp-per-row algorithm is reserved but not built")
@@ -78,6 +85,7 @@ const char* ccml_softmax_algo_name(ccml_softmax_algo algo) {
     case CCML_SOFTMAX_AUTO:          return "auto";
     case CCML_SOFTMAX_BLOCK_PER_ROW: return "block_per_row";
     case CCML_SOFTMAX_WARP_PER_ROW:  return "warp_per_row";
+    case CCML_SOFTMAX_ONLINE:        return "online";
   }
   return "unknown";
 }

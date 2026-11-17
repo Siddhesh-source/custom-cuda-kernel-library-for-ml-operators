@@ -65,8 +65,9 @@ struct F16 {
                                ccml_layernorm_algo algo = CCML_LAYERNORM_AUTO) {
     return ccml_layernorm_f16(y, x, g, b, rows, cols, eps, algo, nullptr);
   }
-  static ccml_status softmax(Pub* y, const Pub* x, int rows, int cols) {
-    return ccml_softmax_f16(y, x, rows, cols, CCML_SOFTMAX_AUTO, nullptr);
+  static ccml_status softmax(Pub* y, const Pub* x, int rows, int cols,
+                             ccml_softmax_algo algo = CCML_SOFTMAX_AUTO) {
+    return ccml_softmax_f16(y, x, rows, cols, algo, nullptr);
   }
 };
 
@@ -96,8 +97,9 @@ struct BF16 {
                                ccml_layernorm_algo algo = CCML_LAYERNORM_AUTO) {
     return ccml_layernorm_bf16(y, x, g, b, rows, cols, eps, algo, nullptr);
   }
-  static ccml_status softmax(Pub* y, const Pub* x, int rows, int cols) {
-    return ccml_softmax_bf16(y, x, rows, cols, CCML_SOFTMAX_AUTO, nullptr);
+  static ccml_status softmax(Pub* y, const Pub* x, int rows, int cols,
+                             ccml_softmax_algo algo = CCML_SOFTMAX_AUTO) {
+    return ccml_softmax_bf16(y, x, rows, cols, algo, nullptr);
   }
 };
 
@@ -241,13 +243,14 @@ void check_layernorm(const ccml_test::Context& ctx, int rows, int cols, float of
 
 template <typename D>
 std::vector<float> run_softmax(const ccml_test::Context& ctx, const std::vector<float>& x_raw,
-                               int rows, int cols, std::vector<float>* x_exact) {
+                               int rows, int cols, std::vector<float>* x_exact,
+                               ccml_softmax_algo algo = CCML_SOFTMAX_AUTO) {
   using Pub = typename D::Pub;
   std::vector<Pub> x;
   quantize<D>(x_raw, &x, x_exact);
   Device16<Pub> dx(x.size()), dy(x.size());
   ctx.check(dx.ok() && dy.ok() && dx.upload(x) && dy.poison(), "device setup");
-  CCML_ASSERT_OK(D::softmax(dy.get(), dx.get(), rows, cols));
+  CCML_ASSERT_OK(D::softmax(dy.get(), dx.get(), rows, cols, algo));
   CCML_ASSERT_OK(ccml_device_synchronize());
   std::vector<Pub> y;
   ctx.check(dy.download(y), "download");
@@ -255,24 +258,27 @@ std::vector<float> run_softmax(const ccml_test::Context& ctx, const std::vector<
 }
 
 template <typename D>
-void check_softmax(const ccml_test::Context& ctx, int rows, int cols, float scale) {
+void check_softmax(const ccml_test::Context& ctx, int rows, int cols, float scale,
+                   ccml_softmax_algo algo = CCML_SOFTMAX_AUTO) {
   std::vector<float> x_raw(static_cast<std::size_t>(rows) * cols), x_exact;
   ccml_support::Rng rng(static_cast<std::uint64_t>(rows) * 3 + cols);
   rng.normal(x_raw.data(), x_raw.size(), 0.0f, scale);
-  const std::vector<float> got = run_softmax<D>(ctx, x_raw, rows, cols, &x_exact);
+  const std::vector<float> got = run_softmax<D>(ctx, x_raw, rows, cols, &x_exact, algo);
 
   std::vector<double> ref;
   ccml_test::softmax_reference(ref, x_exact, rows, cols);
   const Tolerance tol = ccml_test::widen_for_storage(
       ccml_test::tolerance_for_softmax_f32(cols), D::unit, D::floor);
   report<D>(ctx,
-            "softmax " + std::to_string(rows) + "x" + std::to_string(cols) +
+            std::string("softmax ") + ccml_softmax_algo_name(algo) + " " +
+                std::to_string(rows) + "x" + std::to_string(cols) +
                 " scale=" + std::to_string(scale),
             ccml_test::compare(got, ref, tol), tol);
 }
 
 const int kMatmulShapes[][3] = {{1, 1, 1}, {17, 33, 65}, {128, 128, 128},
                                 {64, 257, 1023}, {3, 768, 768}, {256, 96, 2048}};
+const ccml_softmax_algo kSoftmaxAlgos[] = {CCML_SOFTMAX_BLOCK_PER_ROW, CCML_SOFTMAX_ONLINE};
 const ccml_layernorm_algo kLayerNormAlgos[] = {CCML_LAYERNORM_TWO_PASS,
                                                 CCML_LAYERNORM_WELFORD,
                                                 CCML_LAYERNORM_WARP_PER_ROW,
@@ -303,8 +309,11 @@ const int kRowShapes[][2] = {{1, 1}, {7, 33}, {64, 768}, {128, 1025}, {16, 4096}
     }                                                                            \
   }                                                                              \
   CCML_TEST(dtypes, D##_softmax) {                                               \
-    for (const auto& s : kRowShapes) check_softmax<D>(ctx, s[0], s[1], 1.0f);    \
-    check_softmax<D>(ctx, 32, 512, 30.0f); /* wide dynamic range */              \
+    for (ccml_softmax_algo algo : kSoftmaxAlgos) {                               \
+      for (const auto& s : kRowShapes)                                           \
+        check_softmax<D>(ctx, s[0], s[1], 1.0f, algo);                           \
+      check_softmax<D>(ctx, 32, 512, 30.0f, algo); /* wide dynamic range */      \
+    }                                                                            \
   }
 
 CCML_DTYPE_TESTS(F16)

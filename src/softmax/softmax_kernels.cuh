@@ -120,6 +120,91 @@ __global__ void softmax_block_per_row(T*       y,
   }
 }
 
+/* ------------------------------------------------------------- online ---
+ *
+ * docs/optimization-log.md entry 13 (Milakov & Gimelshein, 2018). A running
+ * maximum m and the sum s of exp(x - m) over the values seen so far, in FP32;
+ * when m grows, s is rescaled by exp(m_old - m_new). Every term is in (0, 1]
+ * and positive terms do not cancel, so FP32 suffices.
+ *
+ * -inf needs care: exp(-inf - (-inf)) is NaN, so a -inf value (or a partial
+ * result whose sum is 0) contributes nothing instead of being exponentiated.
+ * A NaN input still poisons the row (NaN > m is false, and exp(NaN) is NaN),
+ * and a row that is entirely -inf ends with m = -inf, s = 0 and writes
+ * exp(NaN) / 0 = NaN, the documented policy (docs/correctness.md).
+ */
+struct OnlineMaxSum {
+  float m; /* running maximum */
+  float s; /* sum of exp(x - m) */
+};
+
+__device__ __forceinline__ void online_add(OnlineMaxSum& a, float v) {
+  if (v > a.m) {
+    a.s = a.s * expf(a.m - v) + 1.0f; /* a.s == 0 when a.m == -inf: 0 * 0 */
+    a.m = v;
+  } else if (v != -INFINITY) {
+    a.s += expf(v - a.m);
+  }
+}
+
+__device__ __forceinline__ OnlineMaxSum online_merge(OnlineMaxSum a, OnlineMaxSum b) {
+  const float m = a.m > b.m ? a.m : b.m;
+  const float sa = a.s == 0.0f ? 0.0f : a.s * expf(a.m - m);
+  const float sb = b.s == 0.0f ? 0.0f : b.s * expf(b.m - m);
+  return OnlineMaxSum{m, sa + sb};
+}
+
+__device__ __forceinline__ OnlineMaxSum online_warp_reduce(OnlineMaxSum v) {
+#pragma unroll
+  for (int offset = 16; offset > 0; offset >>= 1) {
+    OnlineMaxSum o;
+    o.m = __shfl_xor_sync(0xffffffffu, v.m, offset);
+    o.s = __shfl_xor_sync(0xffffffffu, v.s, offset);
+    v = online_merge(v, o);
+  }
+  return v;
+}
+
+/* Block-wide merge; every thread receives the result. Contains barriers. */
+__device__ __forceinline__ OnlineMaxSum online_block_reduce(OnlineMaxSum v,
+                                                            OnlineMaxSum* scratch) {
+  const int lane = static_cast<int>(threadIdx.x) % 32;
+  const int warp = static_cast<int>(threadIdx.x) / 32;
+  const int warps = (static_cast<int>(blockDim.x) + 31) / 32;
+  v = online_warp_reduce(v);
+  if (lane == 0) scratch[warp] = v;
+  __syncthreads();
+  OnlineMaxSum t = lane < warps ? scratch[lane] : OnlineMaxSum{-INFINITY, 0.0f};
+  return online_warp_reduce(t);
+}
+
+/*
+ * Online softmax, block per row: pass 1 the running (max, sum) statistics,
+ * pass 2 the write. Two reads of the row instead of three, FP32 only.
+ *
+ *   grid = (rows), block = (threads), a multiple of 32
+ */
+template <typename T>
+__global__ void softmax_online(T* y, const T* x, int rows, int cols) {
+  using ccml::detail::to_float;
+  const int row = static_cast<int>(blockIdx.x);
+  if (row >= rows) return;
+  const long long base = static_cast<long long>(row) * cols;
+  const T* __restrict__ row_in = x + base;
+  T* __restrict__ row_out = y + base;
+  __shared__ OnlineMaxSum scratch[32];
+
+  OnlineMaxSum st{-INFINITY, 0.0f};
+  for (int c = static_cast<int>(threadIdx.x); c < cols; c += static_cast<int>(blockDim.x)) {
+    online_add(st, to_float(row_in[c]));
+  }
+  st = online_block_reduce(st, scratch);
+  const float inv = 1.0f / st.s;
+  for (int c = static_cast<int>(threadIdx.x); c < cols; c += static_cast<int>(blockDim.x)) {
+    row_out[c] = ccml::detail::from_float<T>(expf(to_float(row_in[c]) - st.m) * inv);
+  }
+}
+
 }  // namespace kernels
 }  // namespace ccml
 

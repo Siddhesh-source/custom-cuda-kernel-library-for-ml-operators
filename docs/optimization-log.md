@@ -1605,7 +1605,8 @@ the minimum (x + r at 8192 x 768); the extra 9 MB is **not explained** yet.
 
 ## 13. Softmax: online softmax in FP32, block per row (`CCML_SOFTMAX_ONLINE`)
 
-**Status:** hypothesis committed before the code.
+**Status:** implemented and correct (FP32, FP16, BF16). Local sm_89 evidence
+below; Kaggle result at the end of the entry when it lands.
 
 ### Hypothesis
 
@@ -1643,3 +1644,68 @@ DRAM 13%.
 
 **What would falsify it:** a speedup under 1.5x on the large shapes (FP64 and
 the third pass were not the limit), or any existing case failing in FP32.
+
+### Change
+
+- `OnlineMaxSum`, `online_add`, `online_merge`, `online_warp_reduce`,
+  `online_block_reduce` and `softmax_online<T>` in
+  `src/softmax/softmax_kernels.cuh`; `CCML_SOFTMAX_ONLINE`. `-inf` terms are
+  skipped explicitly (exp(-inf - (-inf)) would be NaN), so the NaN / -inf
+  policy of docs/correctness.md holds unchanged.
+- Tests: `softmax.every_algorithm_on_every_case` (13 cases, 1 to 50257
+  columns, +-5000 and scale-30 inputs, plus +-10000 uniform with the
+  sum-to-1 property check) and `softmax.special_values_policy` (-inf entries
+  exactly 0 including a leading run of 290, an all -inf row NaN, a NaN
+  poisoning its row, one-hot exactness), both for every algorithm; FP16/BF16
+  dtype tests for every algorithm.
+- Bench: `ccml_bench_softmax --dtype f32,f16,bf16`, the cuDNN baseline for
+  16-bit storage, `bench_torch.py --softmax-dtypes`; the Kaggle job runs all
+  three dtypes for softmax.
+
+### Evidence
+
+**Correctness (sm_89):** worst normalized error over every case:
+BLOCK_PER_ROW 0.182, **ONLINE 0.184**. Every special-value check passes for
+both.
+
+**Timings, local sm_89 (indicative), warm L2, median of 200**
+(`results/sm_89/softmax_online.csv`; DRAM 114 GB/s measured):
+
+| Shape (rows x cols) | block_per_row f32 | **online f32** | GB/s | block_per_row f16 | online f16 |
+|---|---|---|---|---|---|
+| 32768 x 1024 | 6,139 us | **2,260 (2.7x)** | 119 | 6,147 | 1,514 (4.1x) |
+| 65536 x 2048 | 19,835 | **9,725 (2.0x)** | 110 | 19,820 | 5,406 (3.7x) |
+| 16384 x 512 | 2,138 | **683 (3.1x)** | 98 | 2,145 | 571 (3.8x) |
+| 8192 x 256 | 836 | **286 (2.9x)** | 59 | 839 | 244 (3.4x) |
+| 1000 x 1000 | 205 | **51.2 (4.0x)** | 156 (L2) | 193 | 47.1 (4.1x) |
+| 16 x 32000 | 106 | **32.8 (3.2x)** | 125 (L2) | 106 | 44.0 (2.4x) |
+| 1 x 50257 | 89.1 | 45.1 (2.0x) | 9 | 100 | 61.4 (1.6x) |
+
+**Nsight Compute, local sm_89, FP32** (`profiles/sm_89/softmax/block_per_row_vs_online_*`):
+
+| Metric (32768 x 1024 / 16 x 32000) | block_per_row | online |
+|---|---|---|
+| Duration under the profiler | 7.10 ms / 120 us | **2.19 ms / 54.0 us** |
+| **FP64 pipe active** | **86.7% / 81.9%** | **0 / 0** |
+| DRAM throughput, % of peak | 29.7% / 35.9% | **93.4%** / 29.9% |
+| Instructions executed | 116 M / 0.74 M | 182 M / 0.83 M (exp evaluated in both passes) |
+| Warps active | 98.5% / 20.5% | 97.4% / 19.1% |
+
+### Verdict
+
+**Kept.**
+
+1. 2-4x on rows >= 1000, cols >= 1000, >= 50% of DRAM: **met** (FP32
+   2.0-4.0x at 97-105% of measured DRAM peak; FP16 3.7-4.1x).
+2. Correct on every existing case at the existing tolerance: **met**
+   (0.184 vs 0.182).
+3. FP64 busy in BLOCK_PER_ROW, none in ONLINE, DRAM the limiter: **met**
+   (87% -> 0; DRAM 30% -> 93%).
+4. Few long rows barely improve: **falsified in ratio, met in substance**:
+   2.0-3.3x, because the FP64 cost was per element, but 16 rows still leave
+   81% of warp slots empty and 1 x 50257 moves only 9 GB/s. Entry 15 (a row
+   split across blocks) is still the step for those shapes.
+
+Short rows remain slow (128-512 columns: 30-60 GB/s, FP32): 256-thread blocks
+on 128-column rows leave half the threads idle and pay two block barriers per
+row; entry 14 (warp per row) is aimed there.

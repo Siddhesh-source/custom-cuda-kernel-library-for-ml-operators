@@ -77,6 +77,7 @@ run_op() {
                                    --sweep "${CCML_MATMUL_SWEEP:-tc}"
                                    --dtype "${CCML_MATMUL_DTYPES:-f32,f16,bf16}")
     [ "$op" = "layernorm" ] && extra=(--dtype "${CCML_ROWWISE_DTYPES:-f32,f16,bf16}")
+    [ "$op" = "softmax" ] && extra=(--dtype "${CCML_ROWWISE_DTYPES:-f32,f16,bf16}")
     [ "$IMPLS" != "all" ] && extra+=(--impls "$IMPLS")
     "$BIN/ccml_bench_$op" --peaks "$peaks" --out "$RES/$op.csv" "${extra[@]}" \
       2> "$OUT/logs/bench_$op.log"
@@ -116,6 +117,7 @@ run_op() {
       --impls "$(IFS=,; echo "${py_impls[*]}")" --compile-mode "$mode" \
       --matmul-dtypes "${CCML_MATMUL_DTYPES:-f32,f16,bf16}" \
       --layernorm-dtypes "${CCML_ROWWISE_DTYPES:-f32,f16,bf16}" \
+      --softmax-dtypes "${CCML_ROWWISE_DTYPES:-f32,f16,bf16}" \
       2> "$OUT/logs/bench_torch_$op.log"
     echo "exit $?"; tail -5 "$OUT/logs/bench_torch_$op.log"
   fi

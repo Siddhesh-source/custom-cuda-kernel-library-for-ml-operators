@@ -1,0 +1,48 @@
+﻿ncu: C:\Program Files\NVIDIA Corporation\Nsight Compute 2026.1.1\ncu.bat
+bench: D:\ccml-softmax\build\local\bin\ccml_bench_softmax.exe
+2026-11-17T18:07:57.4679925+05:30
+
+#### llama1b.attn.s1024
+==PROF== Connected to process 13140 (D:\ccml-softmax\build\local\bin\ccml_bench_softmax.exe)
+# gpu: NVIDIA GeForce RTX 3050 A Laptop GPU (cc 8.9)  driver: 591.66  cuda runtime: 13.1  commit: unknown
+# peaks: fp32 11.128 TFLOPS theoretical, 0.000 measured; bandwidth 128.0 GB/s theoretical, 0.0 measured (0 = not measured)
+# tensor core peaks (16-bit in, fp32 accumulate): f16 22.257 TFLOPS theoretical, 0.000 measured; bf16 22.257 theoretical, 0.000 measured (0 = none on this GPU or not measured)
+# telemetry: NVML; other compute processes on GPU: 24
+op,impl,algo,dtype,tag,M,N,K,rows,cols,cache,iters,median_us,p10_us,p90_us,iqr_us,min_us,ci95_lo_us,ci95_hi_us,batched_mean_us,tflops,gbps,pct_peak_theory,pct_peak_measured,max_abs_err,max_rel_err,gate,sm_clock_mhz,mem_clock_mhz,temp_c,clock_reasons,throttled,gpu,cc,driver,cuda,commit
+==PROF== Profiling "softmax_block_per_row": 0%....50%....100% - 18 passes
+==PROF== Profiling "softmax_online": 0%....50%....100% - 18 passes
+softmax,ccml,block_per_row,f32,llama1b.attn.s1024,0,0,0,32768,1024,warm,100,6139.31,6138.02,6354.47,1.46401,6136.7,6139.07,6139.62,6168.01,,43.724,34.16,,4.456e-09,5.611e-07,PASS,2550,8001,54,0x0,0,"NVIDIA GeForce RTX 3050 A Laptop GPU",8.9,591.66,13.1,unknown
+softmax,ccml,online,f32,llama1b.attn.s1024,0,0,0,32768,1024,warm,100,2354.03,2235.88,2673.59,328.56,2227.94,2263.15,2368.96,2284.21,,114.03,89.08,,1.32e-08,6.269e-07,PASS,2550,8001,54,0x0,0,"NVIDIA GeForce RTX 3050 A Laptop GPU",8.9,591.66,13.1,unknown
+softmax,ccml,warp_per_row,f32,llama1b.attn.s1024,0,0,0,32768,1024,warm,,,,,,,,,,,,,,,,NOT_RUN,2550,8001,54,0x0,0,"NVIDIA GeForce RTX 3050 A Laptop GPU",8.9,591.66,13.1,unknown
+ncu.bat : done softmax llama1b.attn.s1024
+At D:\ccml-softmax\scripts\ncu_matmul.ps1:80 char:3
++   & $ncu @nargs 2>&1 | Out-File -Append -Encoding utf8 $log
++   ~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (done softmax llama1b.attn.s1024:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+==PROF== Disconnected from process 13140
+==PROF== Report: D:\ccml-softmax\profiles\sm_89\softmax\block_per_row_vs_online_llama1b.attn.s1024.ncu-rep
+
+#### vocab32000.rows16
+==PROF== Connected to process 31804 (D:\ccml-softmax\build\local\bin\ccml_bench_softmax.exe)
+# gpu: NVIDIA GeForce RTX 3050 A Laptop GPU (cc 8.9)  driver: 591.66  cuda runtime: 13.1  commit: unknown
+# peaks: fp32 11.128 TFLOPS theoretical, 0.000 measured; bandwidth 128.0 GB/s theoretical, 0.0 measured (0 = not measured)
+# tensor core peaks (16-bit in, fp32 accumulate): f16 22.257 TFLOPS theoretical, 0.000 measured; bf16 22.257 theoretical, 0.000 measured (0 = none on this GPU or not measured)
+# telemetry: NVML; other compute processes on GPU: 24
+op,impl,algo,dtype,tag,M,N,K,rows,cols,cache,iters,median_us,p10_us,p90_us,iqr_us,min_us,ci95_lo_us,ci95_hi_us,batched_mean_us,tflops,gbps,pct_peak_theory,pct_peak_measured,max_abs_err,max_rel_err,gate,sm_clock_mhz,mem_clock_mhz,temp_c,clock_reasons,throttled,gpu,cc,driver,cuda,commit
+==PROF== Profiling "softmax_block_per_row": 0%....50%....100% - 18 passes
+==PROF== Profiling "softmax_online": 0%....50%....100% - 18 passes
+softmax,ccml,block_per_row,f32,vocab32000.rows16,0,0,0,16,32000,warm,100,122.08,121.664,126.083,0.520004,121.12,121.984,122.16,121.128,,33.552,26.21,,1.207e-10,5.632e-07,PASS,2205,8001,50,0x1,0,"NVIDIA GeForce RTX 3050 A Laptop GPU",8.9,591.66,13.1,unknown
+softmax,ccml,online,f32,vocab32000.rows16,0,0,0,16,32000,warm,100,37.536,37.216,37.9232,0.327999,37.024,37.504,37.6,36.6246,,109.12,85.24,,2.371e-10,6.244e-07,PASS,2205,8001,50,0x1,0,"NVIDIA GeForce RTX 3050 A Laptop GPU",8.9,591.66,13.1,unknown
+softmax,ccml,warp_per_row,f32,vocab32000.rows16,0,0,0,16,32000,warm,,,,,,,,,,,,,,,,NOT_RUN,2205,8001,50,0x1,0,"NVIDIA GeForce RTX 3050 A Laptop GPU",8.9,591.66,13.1,unknown
+ncu.bat : done softmax vocab32000.rows16
+At D:\ccml-softmax\scripts\ncu_matmul.ps1:80 char:3
++   & $ncu @nargs 2>&1 | Out-File -Append -Encoding utf8 $log
++   ~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (done softmax vocab32000.rows16:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+==PROF== Disconnected from process 31804
+==PROF== Report: D:\ccml-softmax\profiles\sm_89\softmax\block_per_row_vs_online_vocab32000.rows16.ncu-rep
+done 2026-11-17T18:08:06.1842995+05:30

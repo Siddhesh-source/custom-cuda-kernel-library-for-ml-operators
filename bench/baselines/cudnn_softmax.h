@@ -3,6 +3,8 @@
 
 #include <cuda_runtime.h>
 
+#include "bench/baselines/cublas.h"
+
 namespace ccml_bench {
 
 /*
@@ -23,8 +25,9 @@ class CudnnSoftmax {
   CudnnSoftmax(const CudnnSoftmax&) = delete;
   CudnnSoftmax& operator=(const CudnnSoftmax&) = delete;
 
-  bool prepare(int rows, int cols);
-  bool run(float* y, const float* x);
+  /* type: storage of x and y (FP32, FP16 or BF16; cuDNN computes in FP32). */
+  bool prepare(int rows, int cols, BlasType type = BlasType::F32);
+  bool run(void* y, const void* x);
   static bool available();
 
  private:

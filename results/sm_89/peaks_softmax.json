@@ -1,0 +1,20 @@
+{
+  "gpu": "NVIDIA GeForce RTX 3050 A Laptop GPU",
+  "cc": "8.9",
+  "fp32_tflops_theory": 11.1283,
+  "fp32_tflops_measured": 8.7070,
+  "tc_f16_tflops_theory": 22.2566,
+  "tc_f16_tflops_measured": 18.1796,
+  "tc_bf16_tflops_theory": 22.2566,
+  "tc_bf16_tflops_measured": 18.2248,
+  "bandwidth_gbps_theory": 128.02,
+  "bandwidth_gbps_measured": 114.49,
+  "sm_clock_mhz_during_fma": 2550,
+  "sm_clock_mhz_during_tc": 2550,
+  "sm_clock_mhz_during_copy": 2550,
+  "max_sm_clock_mhz": 3105,
+  "clock_reasons_during_fma": "0x0",
+  "clock_reasons_during_tc": "0x0",
+  "copy_bytes": 536870912,
+  "method": "1500 ms GPU-time warmup, then median of event-timed runs; fma: 8 chains x 4096 iters; tensor cores: wmma 16x16x16 fp32-accumulate, 4 chains x 2048 iters per warp; copy: float4 grid-stride, read+write"
+}
