@@ -56,8 +56,11 @@ OUTPUT_ROOT = HERE / "_output"
 
 DEFAULT_JOBS = ["sanitize", "matmul", "layernorm", "softmax"]
 KNOWN_JOBS = set(DEFAULT_JOBS) | {"all", "build"}
+# Excluded from the payload. profiles/ (Nsight reports, MBs) and results/ (CSVs)
+# are outputs, not inputs: a session never reads them, and packing them would
+# grow the payload past Kaggle's script limit.
 EXCLUDE_DIRS = {".git", "build", "out", "__pycache__", ".pytest_cache", ".vs",
-                ".venv", "_build", "_output"}
+                ".venv", "_build", "_output", "profiles", "results"}
 # Kaggle rejects a very large script; fail loudly rather than mysteriously.
 MAX_PAYLOAD_BYTES = 800_000
 
