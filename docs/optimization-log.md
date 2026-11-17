@@ -1979,3 +1979,44 @@ rows in the CSV).
    is the fairer measure of fusion here; this row of the table overstates it.
 4. Correctness and policy: **met.**
 3. (vs PyTorch) and the NCU check are pending (Kaggle; elevated prompt).
+
+## 17. Softmax: register-resident block per row for long rows (`CCML_SOFTMAX_BLOCK_RESIDENT`)
+
+**Status:** hypothesis committed before the code.
+
+### Hypothesis
+
+The Kaggle T4 run of entries 13-16 (commit 01c3555,
+results/sm_75/softmax_variants/softmax.csv) shows the long-row path is the
+weak one. For 1024 < cols <= 4097 with many rows, the best ccml variant is
+ONLINE (SPLIT_ROW runs ONLINE when rows fill the GPU) at 82-132 GB/s, 36-58%
+of the 227 GB/s measured peak, and it loses to Triton's looped online kernel
+by 1.3-2.5x (FP16 warm: gpt2s.attn.s2048 1573 vs 873 us, gpt2m.attn.s2048
+3154 vs 1246 us, odd.c3079.rows1000 94 vs 68 us). Short rows, where
+WARP_PER_ROW runs, reach 220-240 GB/s on the same GPU.
+
+`softmax_online` (entry 13) has the three costs entry 14 removed for short
+rows: (a) scalar 2- or 4-byte loads, so a warp moves 64 bytes per FP16 load
+instruction instead of 512; (b) an online update per element: an `expf`, a
+compare and a rescale of the running sum, on top of the second pass's
+`expf`; (c) a second read of the row from L2/DRAM in the write pass.
+
+**Change:** the spec's "block-per-row for long rows" built like entry 14: one
+256-thread block per row, the row read once into registers in 128-bit chunks
+(kV = 16 / sizeof(T), scalar when misaligned or cols % kV != 0), up to 8
+chunks per thread: cols <= 8192 FP32, 16384 FP16/BF16. Block max reduction,
+one `expf` per element kept in registers, block sum reduction, one write. NaN
+and -inf policy identical to WARP_PER_ROW. New enum value 5; AUTO picks it for
+1024 < cols <= its limit.
+
+**Predictions** (Kaggle T4, warm, against ONLINE on the same run):
+
+1. FP16/BF16 attention rows 2048 and odd 1025-4097, many rows: **1.5-2.5x**,
+   reaching **>= 180 GB/s** (80% of measured peak); at that bandwidth it beats
+   or ties Triton's looped kernel on those shapes.
+2. FP32 at the same shapes: **1.3-1.8x** (its loads were already 4 bytes, so
+   cost (a) is smaller).
+3. Rows of 1 or 16 x 30522+ (beyond the limit, or too few rows to fill the
+   GPU): no change; SPLIT_ROW stays the choice.
+4. Nsight Compute: dram__throughput near the WARP_PER_ROW figure; L2-to-SM
+   traffic per row halved (one read instead of two).
