@@ -19,7 +19,10 @@
  * comparison honest.
  */
 
+#include <type_traits>
+
 #include <cuda_runtime.h>
+#include <mma.h>
 
 #include "common/dtype.cuh"
 #include "common/util.h"
@@ -614,6 +617,253 @@ matmul_double_buffered(T* C, const T* A, const T* B, int M, int N, int K) {
         for (int j = 0; j < 4; ++j) {
           if (col0 + j < N) out[j] = ccml::detail::from_float<T>(acc[i][c4 * 4 + j]);
         }
+      }
+    }
+  }
+}
+
+/* ============================================================ Tensor Cores ==
+ *
+ * The Tensor Core kernels take 16-bit operands (FP16 everywhere from sm_70,
+ * BF16 from sm_80) and accumulate in FP32. They share one block-tile
+ * description and one global->shared loader that moves raw 16-bit words, so
+ * the same code serves both storage types.
+ */
+
+/* Block tile BM x BN x BK computed by (BM/WM) x (BN/WN) warps, each owning a
+   WM x WN warp tile. */
+struct MatmulTcConfig {
+  int bm, bn, bk, wm, wn;
+};
+
+constexpr MatmulTcConfig kMatmulTcConfigs[] = {
+    {128, 128, 32, 64, 32}, /* 0: default, 8 warps (optimization log entry 4) */
+    {64, 64, 32, 32, 32},   /* 1: 4 warps, for mid-sized grids */
+    {16, 128, 32, 16, 32},  /* 2: one 16-row fragment band, decode-sized M */
+};
+constexpr int kMatmulTcConfigCount =
+    static_cast<int>(sizeof(kMatmulTcConfigs) / sizeof(kMatmulTcConfigs[0]));
+
+/* True when this compilation pass can emit Tensor Core instructions for T.
+   Evaluated in device passes only; the host pass never runs kernel bodies. */
+template <typename T>
+struct TcAvailable : std::false_type {};
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 700
+template <>
+struct TcAvailable<__half> : std::true_type {};
+#endif
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
+template <>
+struct TcAvailable<__nv_bfloat16> : std::true_type {};
+#endif
+
+/* Eight 16-bit elements: one 128-bit access. */
+struct alignas(16) Raw8 {
+  unsigned short v[8];
+};
+
+/* Loads 8 consecutive 16-bit words of row `row` of a [rows, cols] matrix,
+   starting at column `col` (a multiple of 8), zero-filled outside the matrix.
+   Zero bits are +0 in FP16 and BF16 alike. kVec: one 128-bit load; the host
+   guarantees cols % 8 == 0 and 16-byte alignment, so col < cols implies
+   col + 7 < cols. */
+template <bool kVec>
+__device__ __forceinline__ Raw8 load_raw8(const unsigned short* M_, int rows, int cols, int row,
+                                          int col) {
+  Raw8 r;
+  if (kVec) {
+    if (row < rows && col < cols) {
+      r = *reinterpret_cast<const Raw8*>(M_ + static_cast<long long>(row) * cols + col);
+    } else {
+#pragma unroll
+      for (int j = 0; j < 8; ++j) r.v[j] = 0;
+    }
+  } else {
+    const unsigned short* p = M_ + static_cast<long long>(row) * cols + col;
+#pragma unroll
+    for (int j = 0; j < 8; ++j) r.v[j] = (row < rows && col + j < cols) ? p[j] : 0;
+  }
+  return r;
+}
+
+/* Writes a 16 x 16 FP32 tile (row-major, in shared memory `tile`) to C at
+   (row0, col0), rounded to T, bounds-checked. One warp; each lane writes
+   half a row (8 elements), with one 128-bit store when kVec and the run is
+   inside the matrix. */
+template <typename T, bool kVec>
+__device__ __forceinline__ void store_tile16(T* C, int M, int N, int row0, int col0,
+                                             const float* tile, int lane) {
+  const int r = lane >> 1;
+  const int c = (lane & 1) * 8;
+  const int gr = row0 + r;
+  const int gc = col0 + c;
+  if (gr >= M) return;
+  alignas(16) T out[8];
+#pragma unroll
+  for (int j = 0; j < 8; ++j) out[j] = ccml::detail::from_float<T>(tile[r * 16 + c + j]);
+  T* dst = C + static_cast<long long>(gr) * N + gc;
+  if (kVec && gc + 7 < N) {
+    *reinterpret_cast<Raw8*>(dst) = *reinterpret_cast<const Raw8*>(out);
+  } else {
+#pragma unroll
+    for (int j = 0; j < 8; ++j) {
+      if (gc + j < N) dst[j] = out[j];
+    }
+  }
+}
+
+/*
+ * WMMA (docs/optimization-log.md, entry 4): entry 3's register-prefetch
+ * double buffering, with the inner product on Tensor Cores.
+ *
+ *  - Shared tiles hold the raw 16-bit operands: As[2][BM][BK+8] and
+ *    Bs[2][BK][BN+8], both row-major. The 8-element pad shifts each row by 16
+ *    bytes so the rows a fragment load touches start in different banks, and
+ *    keeps every fragment pointer 32-byte aligned (load_matrix_sync's rule):
+ *    a 16-row step is 16*(BK+8)*2 bytes, a 16-column step 32 bytes.
+ *  - Per k-step of BK: BK/16 rounds of mma_sync(16x16x16) per accumulator
+ *    fragment, FP32 accumulate.
+ *  - Epilogue: each accumulator fragment goes through a per-warp 16x16 FP32
+ *    scratch tile (the fragment's register layout is unspecified), aliased
+ *    onto the operand buffers after the main loop.
+ *
+ *   grid  = (div_up(N, BN), div_up(M, BM))
+ *   block = (BM/WM) * (BN/WN) warps
+ *
+ * T must be __half (sm_70+) or __nv_bfloat16 (sm_80+). For a type the
+ * compilation target lacks Tensor Cores for, the body is empty; the host
+ * never launches it (matmul.cu checks the compiled architecture).
+ */
+/* Occupancy floor of 2 blocks per SM (<= 128 registers at 256 threads): the
+   BF16 instantiation of configuration 0 otherwise compiles to 132 registers on
+   sm_89, one block per SM, and runs 1.75x slower than FP16 (optimization log
+   entry 4). On the T4 configuration 0's 37.9 KB of shared memory already
+   limits it to one block per SM; the bound then only caps registers. */
+template <typename T, int BM, int BN, int BK, int WM, int WN, bool kVec>
+__global__ void __launch_bounds__((BM / WM) * (BN / WN) * 32, 2)
+matmul_wmma(T* C, const T* A, const T* B, int M, int N, int K) {
+  if constexpr (TcAvailable<T>::value) {
+    using namespace nvcuda;
+    constexpr int kWarpsN = BN / WN;
+    constexpr int kWarps = (BM / WM) * kWarpsN;
+    constexpr int kThreads = kWarps * 32;
+    constexpr int kFragM = WM / 16;
+    constexpr int kFragN = WN / 16;
+    constexpr int kLdA = BK + 8;
+    constexpr int kLdB = BN + 8;
+    constexpr int kStageA = BM * kLdA;
+    constexpr int kStageB = BK * kLdB;
+    constexpr int kChunksA = BM * BK / 8;
+    constexpr int kChunksB = BK * BN / 8;
+    constexpr int kPerThreadA = (kChunksA + kThreads - 1) / kThreads;
+    constexpr int kPerThreadB = (kChunksB + kThreads - 1) / kThreads;
+    constexpr int kOperandWords = 2 * (kStageA + kStageB);
+    constexpr int kScratchWords = kWarps * 256 * 2; /* 16x16 floats per warp */
+    constexpr int kSmemWords = kOperandWords > kScratchWords ? kOperandWords : kScratchWords;
+    static_assert(BM % WM == 0 && BN % WN == 0 && WM % 16 == 0 && WN % 16 == 0 && BK % 16 == 0,
+                  "Tensor Core tiles are multiples of 16");
+
+    __shared__ __align__(32) unsigned short smem[kSmemWords];
+    unsigned short* const As = smem;                  /* [2][BM][kLdA] */
+    unsigned short* const Bs = smem + 2 * kStageA;    /* [2][BK][kLdB] */
+
+    const unsigned short* const Ar = reinterpret_cast<const unsigned short*>(A);
+    const unsigned short* const Br = reinterpret_cast<const unsigned short*>(B);
+    const int tid = static_cast<int>(threadIdx.x);
+    const int warp = tid / 32;
+    const int lane = tid % 32;
+    const int warp_row = (warp / kWarpsN) * WM;
+    const int warp_col = (warp % kWarpsN) * WN;
+    const int block_row = static_cast<int>(blockIdx.y) * BM;
+    const int block_col = static_cast<int>(blockIdx.x) * BN;
+
+    Raw8 ra[kPerThreadA];
+    Raw8 rb[kPerThreadB];
+    auto fetch = [&](int k0) {
+#pragma unroll
+      for (int p = 0; p < kPerThreadA; ++p) {
+        const int q = tid + p * kThreads;
+        if (q < kChunksA) {
+          ra[p] = load_raw8<kVec>(Ar, M, K, block_row + q / (BK / 8), k0 + (q % (BK / 8)) * 8);
+        }
+      }
+#pragma unroll
+      for (int p = 0; p < kPerThreadB; ++p) {
+        const int q = tid + p * kThreads;
+        if (q < kChunksB) {
+          rb[p] = load_raw8<kVec>(Br, K, N, k0 + q / (BN / 8), block_col + (q % (BN / 8)) * 8);
+        }
+      }
+    };
+    auto stash = [&](int buf) {
+#pragma unroll
+      for (int p = 0; p < kPerThreadA; ++p) {
+        const int q = tid + p * kThreads;
+        if (q < kChunksA) {
+          *reinterpret_cast<Raw8*>(As + buf * kStageA + (q / (BK / 8)) * kLdA +
+                                   (q % (BK / 8)) * 8) = ra[p];
+        }
+      }
+#pragma unroll
+      for (int p = 0; p < kPerThreadB; ++p) {
+        const int q = tid + p * kThreads;
+        if (q < kChunksB) {
+          *reinterpret_cast<Raw8*>(Bs + buf * kStageB + (q / (BN / 8)) * kLdB +
+                                   (q % (BN / 8)) * 8) = rb[p];
+        }
+      }
+    };
+
+    wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc[kFragM][kFragN];
+#pragma unroll
+    for (int i = 0; i < kFragM; ++i) {
+#pragma unroll
+      for (int j = 0; j < kFragN; ++j) wmma::fill_fragment(acc[i][j], 0.0f);
+    }
+
+    fetch(0);
+    stash(0);
+    __syncthreads();
+
+    int buf = 0;
+    for (int k0 = 0; k0 < K; k0 += BK) {
+      const bool has_next = k0 + BK < K;
+      if (has_next) fetch(k0 + BK); /* in flight during the math below */
+
+      const T* const as = reinterpret_cast<const T*>(As + buf * kStageA);
+      const T* const bs = reinterpret_cast<const T*>(Bs + buf * kStageB);
+#pragma unroll
+      for (int kk = 0; kk < BK; kk += 16) {
+        wmma::fragment<wmma::matrix_b, 16, 16, 16, T, wmma::row_major> b_frag[kFragN];
+#pragma unroll
+        for (int j = 0; j < kFragN; ++j) {
+          wmma::load_matrix_sync(b_frag[j], bs + kk * kLdB + warp_col + j * 16, kLdB);
+        }
+#pragma unroll
+        for (int i = 0; i < kFragM; ++i) {
+          wmma::fragment<wmma::matrix_a, 16, 16, 16, T, wmma::row_major> a_frag;
+          wmma::load_matrix_sync(a_frag, as + (warp_row + i * 16) * kLdA + kk, kLdA);
+#pragma unroll
+          for (int j = 0; j < kFragN; ++j) wmma::mma_sync(acc[i][j], a_frag, b_frag[j], acc[i][j]);
+        }
+      }
+
+      if (has_next) stash(buf ^ 1);
+      __syncthreads();
+      buf ^= 1;
+    }
+
+    /* The loop ended on a barrier, so the operand buffers are free. */
+    float* const scratch = reinterpret_cast<float*>(smem) + warp * 256;
+#pragma unroll
+    for (int i = 0; i < kFragM; ++i) {
+#pragma unroll
+      for (int j = 0; j < kFragN; ++j) {
+        wmma::store_matrix_sync(scratch, acc[i][j], 16, wmma::mem_row_major);
+        __syncwarp();
+        store_tile16<T, kVec>(C, M, N, block_row + warp_row + i * 16,
+                              block_col + warp_col + j * 16, scratch, lane);
+        __syncwarp();
       }
     }
   }

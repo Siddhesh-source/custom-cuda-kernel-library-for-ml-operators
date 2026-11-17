@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <string>
+#include <type_traits>
 
 #include "common/check.h"
 #include "common/dtype.cuh"
@@ -15,6 +16,8 @@ namespace {
 using ccml::kernels::kMatmulTileConfigCount;
 using ccml::kernels::kMatmulTileConfigs;
 using ccml::kernels::MatmulTileConfig;
+using ccml::kernels::kMatmulTcConfigs;
+using ccml::kernels::MatmulTcConfig;
 
 std::string fn_name(const char* suffix) { return std::string("ccml_matmul_") + suffix; }
 
@@ -167,6 +170,103 @@ ccml_status tiled_family(ccml_matmul_algo algo, T* C, const T* A, const T* B, in
   }
 }
 
+/* -------------------------------------------- the Tensor Core family --
+ *
+ * 16-bit input only. Whether a kernel body was compiled for an architecture
+ * with Tensor Cores for its input type is read from the binary actually
+ * loaded for this device (cudaFuncAttributes::binaryVersion), not guessed
+ * from the device: a build for sm_75 run on an sm_89 GPU through PTX JIT
+ * still has no BF16 body. */
+
+template <typename Kernel>
+int compiled_arch(Kernel kernel) {
+  cudaFuncAttributes attr{};
+  if (cudaFuncGetAttributes(&attr, kernel) != cudaSuccess) {
+    (void)cudaGetLastError(); /* not sticky; clear it */
+    return 0;
+  }
+  return attr.binaryVersion;
+}
+
+template <typename T>
+constexpr int kTcMinArch = std::is_same<T, __nv_bfloat16>::value ? 80 : 70;
+
+template <typename T, typename Kernel>
+ccml_status require_tc(Kernel kernel) {
+  static const int arch = compiled_arch(kernel);
+  if (arch < kTcMinArch<T>) {
+    ccml::detail::set_last_error(
+        (std::string("ccml_matmul: ") +
+         (std::is_same<T, __nv_bfloat16>::value ? "BF16 Tensor Cores need sm_80+"
+                                                : "FP16 Tensor Cores need sm_70+") +
+         "; this binary runs sm_" + std::to_string(arch) + " code on this device")
+            .c_str());
+    return CCML_ERROR_NOT_IMPLEMENTED;
+  }
+  return CCML_SUCCESS;
+}
+
+template <typename T, int I>
+ccml_status launch_wmma(T* C, const T* A, const T* B, int M, int N, int K,
+                        cudaStream_t stream) {
+  if constexpr (std::is_same<T, float>::value) {
+    ccml::detail::set_last_error(
+        "ccml_matmul: Tensor Core variants take 16-bit input (f16, or bf16 on sm_80+); "
+        "sm_75 has no FP32 Tensor Core path");
+    return CCML_ERROR_NOT_IMPLEMENTED;
+  } else {
+    constexpr MatmulTcConfig cfg = kMatmulTcConfigs[I];
+    /* 128-bit access needs rows of A, B and C to split into whole 8-element
+       vectors, and 16-byte-aligned pointers. */
+    const bool vec = K % 8 == 0 && N % 8 == 0 && aligned(A, 16) && aligned(B, 16) &&
+                     aligned(C, 16);
+    ccml::detail::LaunchConfig config;
+    config.block = dim3((cfg.bm / cfg.wm) * (cfg.bn / cfg.wn) * 32, 1, 1);
+    config.grid = ccml::detail::grid_for_2d(N, M, cfg.bn, cfg.bm);
+    void (*const matmul_wmma)(T*, const T*, const T*, int, int, int) =
+        &ccml::kernels::matmul_wmma<T, cfg.bm, cfg.bn, cfg.bk, cfg.wm, cfg.wn, true>;
+    void (*const matmul_wmma_scalar_global)(T*, const T*, const T*, int, int, int) =
+        &ccml::kernels::matmul_wmma<T, cfg.bm, cfg.bn, cfg.bk, cfg.wm, cfg.wn, false>;
+    const ccml_status ok = require_tc<T>(matmul_wmma);
+    if (ok != CCML_SUCCESS) return ok;
+    if (vec) {
+      CCML_LAUNCH(matmul_wmma, config, stream, C, A, B, M, N, K);
+    } else {
+      CCML_LAUNCH(matmul_wmma_scalar_global, config, stream, C, A, B, M, N, K);
+    }
+    return CCML_SUCCESS;
+  }
+}
+
+bool is_tc_family(ccml_matmul_algo algo) { return algo == CCML_MATMUL_WMMA; }
+
+template <typename T, int I>
+ccml_status launch_tc_family(ccml_matmul_algo algo, T* C, const T* A, const T* B, int M, int N,
+                             int K, cudaStream_t stream) {
+  switch (algo) {
+    case CCML_MATMUL_WMMA:
+      return launch_wmma<T, I>(C, A, B, M, N, K, stream);
+    default:
+      ccml::detail::set_last_error("ccml_matmul: not a Tensor Core algorithm");
+      return CCML_ERROR_INVALID_ARGUMENT;
+  }
+}
+
+template <typename T>
+ccml_status tc_family(ccml_matmul_algo algo, T* C, const T* A, const T* B, int M, int N, int K,
+                      int index, cudaStream_t stream) {
+  static_assert(ccml::kernels::kMatmulTcConfigCount == 3,
+                "add a case below for every Tensor Core configuration");
+  switch (index) {
+    case 0: return launch_tc_family<T, 0>(algo, C, A, B, M, N, K, stream);
+    case 1: return launch_tc_family<T, 1>(algo, C, A, B, M, N, K, stream);
+    case 2: return launch_tc_family<T, 2>(algo, C, A, B, M, N, K, stream);
+    default:
+      ccml::detail::set_last_error("ccml_matmul: Tensor Core config index out of range");
+      return CCML_ERROR_INVALID_ARGUMENT;
+  }
+}
+
 /* One implementation for every storage type; the public entry points below are
    thin instantiations of it. */
 template <typename Public>
@@ -200,6 +300,9 @@ ccml_status matmul(Public* C_pub, const Public* A_pub, const Public* B_pub, int 
       /* Configuration 0 until the tile sweep decides per shape (S4). */
       return tiled_family(resolve(algo), C, A, B, M, N, K, /*index=*/0, stream);
 
+    case CCML_MATMUL_WMMA:
+      return tc_family(algo, C, A, B, M, N, K, /*index=*/0, stream);
+
     default:
       ccml::detail::set_last_error(
           (fn_name(ccml::detail::dtype_suffix<Public>()) + ": unknown algorithm").c_str());
@@ -214,6 +317,10 @@ ccml_status tuned(Public* C, const Public* A, const Public* B, int M, int N, int
   const ccml_status valid = validate(C, A, B, M, N, K);
   if (valid != CCML_SUCCESS) {
     return valid;
+  }
+  if (is_tc_family(algo)) {
+    return tc_family(algo, ccml::detail::device_ptr(C), ccml::detail::device_ptr(A),
+                     ccml::detail::device_ptr(B), M, N, K, index, stream);
   }
   return tiled_family(algo, ccml::detail::device_ptr(C), ccml::detail::device_ptr(A),
                       ccml::detail::device_ptr(B), M, N, K, index, stream);
@@ -231,6 +338,7 @@ const char* ccml_matmul_algo_name(ccml_matmul_algo algo) {
     case CCML_MATMUL_REGISTER_TILED: return "register_tiled";
     case CCML_MATMUL_VECTORIZED:     return "vectorized";
     case CCML_MATMUL_DOUBLE_BUFFERED: return "double_buffered";
+    case CCML_MATMUL_WMMA:           return "wmma";
   }
   return "unknown";
 }
@@ -270,6 +378,24 @@ ccml_status ccml_matmul_tile_config_get(int index, ccml_matmul_tile_config* out)
   out->tm = c.tm;
   out->tn = c.tn;
   out->threads = (c.bm / c.tm) * (c.bn / c.tn);
+  return CCML_SUCCESS;
+}
+
+int ccml_matmul_tc_config_count(void) { return ccml::kernels::kMatmulTcConfigCount; }
+
+ccml_status ccml_matmul_tc_config_get(int index, ccml_matmul_tc_config* out) {
+  ccml::detail::clear_last_error();
+  CCML_REQUIRE(out != nullptr, CCML_ERROR_INVALID_ARGUMENT,
+               "ccml_matmul_tc_config_get: out is null");
+  CCML_REQUIRE(index >= 0 && index < ccml::kernels::kMatmulTcConfigCount,
+               CCML_ERROR_INVALID_ARGUMENT, "ccml_matmul_tc_config_get: index out of range");
+  const ccml::kernels::MatmulTcConfig& c = ccml::kernels::kMatmulTcConfigs[index];
+  out->bm = c.bm;
+  out->bn = c.bn;
+  out->bk = c.bk;
+  out->wm = c.wm;
+  out->wn = c.wn;
+  out->warps = (c.bm / c.wm) * (c.bn / c.wn);
   return CCML_SUCCESS;
 }
 

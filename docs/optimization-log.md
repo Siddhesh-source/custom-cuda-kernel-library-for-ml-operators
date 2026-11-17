@@ -370,7 +370,9 @@ which changes the compute ceiling itself.
 
 ## 4. Matmul: Tensor Cores through WMMA (`CCML_MATMUL_WMMA`)
 
-**Status:** hypothesis committed before the code.
+**Status:** implemented and correct (FP16 everywhere; BF16 on sm_80+, SKIP on
+the T4; all 3 Tensor Core configurations). Local sm_89 evidence below; the
+official T4 timings are pending (Kaggle, `results/sm_75/matmul.csv`).
 
 ### Hypothesis
 
@@ -423,3 +425,101 @@ inner product moved to Tensor Cores:
 f16, which would mean the kernel is limited by something other than math
 throughput (the global loads, the epilogue, or shared-memory conflicts on the
 fragment loads); NCU decides which.
+
+### Change
+
+- `matmul_wmma<T, BM, BN, BK, WM, WN, kVec>` in `src/matmul/matmul_kernels.cuh`;
+  `CCML_MATMUL_WMMA` uses Tensor Core configuration 0 (128x128x32, warp
+  64x32). Three configurations (`ccml_matmul_tc_config_*` in
+  `include/ccml/tuning.h`; bench rows `wmma_*`): 128x128x32 / 8 warps,
+  64x64x32 / 4 warps, 16x128x32 / 4 warps.
+- The host reads the architecture the loaded binary was compiled for
+  (`cudaFuncAttributes::binaryVersion`) and returns NOT_IMPLEMENTED below
+  sm_70 (FP16) or sm_80 (BF16), and always for FP32.
+- sm_75 compile check (`-DCCML_CUDA_ARCHITECTURES=75`): FP16 configuration 0
+  is 130 registers, 37.9 KB shared, `LOCAL:0`; the BF16 bodies are empty there.
+- Tests: `tests/test_matmul_tc.cpp`, new suite `matmul_tc` (also added to
+  `scripts/sanitize.sh`): every configuration on 17 awkward shapes, every
+  k-step count (K = 1 ... 1000, vector and scalar paths), misaligned views
+  (offsets 1, 2, 4 elements), target shapes through the enum, NaN-poisoned
+  outputs, f32 refused, config API bounds. sm_89: 10/10 pass, FP16 and BF16;
+  worst normalized error 0.50 (the final rounding to 16 bits dominates).
+
+**Correction during the step: the occupancy floor again.** The first build gave
+the BF16 instantiation of configuration 0 **132 registers** on sm_89 (FP16:
+123), one block per SM instead of two, and BF16 ran **1.75x slower than
+FP16** on the same code (2007 vs 1142 us, gpt2m.ffn_up.m2048;
+`results/sm_89/wmma_before_bound_gpt2m.ffn_up.m2048.csv`). Entry 2's fix,
+`__launch_bounds__(threads, 2)`, brings it to 128 registers with `LOCAL:0`
+and 2007 -> 1444 us. A BF16 gap to FP16 remains (1444 vs 1138 us); it is not
+explained yet, and the MMA_SYNC step, which controls fragment loads
+explicitly, is where it is examined.
+
+### Evidence
+
+**Timings, local RTX 3050 A Laptop sm_89 (indicative), FP16, warm L2, median
+of 200, candidates interleaved in one run per shape**
+(`results/sm_89/wmma_*.csv`, `peaks_wmma.json`; table by
+`python scripts/summarize_matmul.py --prev double_buffered --new wmma --dtype f16 "results/sm_89/wmma_gpt2*.csv"`).
+The sm_89 Tensor Core ceiling is 512 FLOP/clk/SM (GeForce, FP32 accumulate):
+`ccml_bench_peaks` measured **18.2 TFLOPS at 2550 MHz**, exactly that rate.
+
+| Shape | double_buffered | **wmma** | best ccml row | cuBLAS GemmEx | wmma %peak (theory / measured) |
+|---|---|---|---|---|---|
+| 2048x4096x1024 | 3,324 us | **1,138 us (2.92x)** | wmma | 983 us * | 67.8% / 82.9% |
+| 512x3072x768 | 525 us | **174 us (3.02x)** | wmma | 145 us | 62.4% / 76.2% |
+| 128x2304x768 | 135 us | **48.1 us (2.81x)** | wmma | 36.9 us | 42.3% / 51.7% |
+| 16x2304x768 | 124 us | 55.3 us | **wmma_64x64x32: 25.6 us** | 16.4 us | 4.6% / 5.6% |
+
+\* cuBLAS ran at 2355 MHz against WMMA's 2505 MHz in that run; clock-normalized
+it is about 924 us, so WMMA is at about **0.81x of cuBLAS** there, not 0.86x.
+
+BF16 (sm_89 only; the T4 has no BF16 Tensor Cores): 2.20-2.32x over
+double_buffered, 0.62-0.68x of cuBLAS.
+
+**Nsight Compute, local sm_89, FP16**
+(`profiles/sm_89/matmul/double_buffered_vs_wmma_*.ncu-rep` and `_metrics.csv`,
+from `scripts/ncu_matmul.ps1 -Name double_buffered_vs_wmma -Kernel "matmul_[dw][om]" -Count 2 -Dtype f16 -Shapes gpt2s.ffn_up.m512,gpt2s.qkv.m16`,
+run elevated; profiled before the occupancy floor, when FP16 used 123
+registers, 127-128 after, with timings unchanged within 1%):
+
+| Metric (512x3072x768 / 16x2304x768) | double_buffered | wmma |
+|---|---|---|
+| Duration under the profiler | 619 / 156 us | **215 / 56 us** |
+| Instructions executed | 45.6 M / 8.35 M | **4.34 M / 0.80 M (10.5x fewer)** |
+| FMA pipe active | 58.1% / 50.5% | 4.0% / 3.1% |
+| Tensor pipe active | 0 | **36.6% / 29.5%** |
+| Top stalls (per issue) | not_selected 1.91, long_scoreboard 1.03 | **math_pipe_throttle 7.38, long_scoreboard 6.84**, barrier 2.49, wait 2.43 |
+| Shared-store bank conflicts | 0 | **427,599** / 76,933 |
+| Shared-load bank conflicts | 0 | 60,557 / 1,190 |
+| Registers, warps active | 124, 32.6% | 123, 30.9% |
+
+### Verdict
+
+**Kept** (FP16 everywhere, BF16 on sm_80+), pending the T4 run, which is the
+real test of prediction 1.
+
+1. At least 3x over double_buffered and 40-70% of cuBLAS on large shapes:
+   **speedup borderline, cuBLAS fraction exceeded on sm_89**: 2.92-3.02x, and
+   0.81-0.84x of cuBLAS (clock-normalized). sm_89 understates the speedup by
+   construction: its GeForce Tensor Cores are only 2x its FP32 rate (512 vs 256
+   FLOP/clk/SM), while the T4's are 8x (1024 vs 128). The T4 decides.
+2. No meaningful gain at decode sizes: **falsified on sm_89.** The 64x64x32
+   configuration runs 16x2304x768 in 25.6 us, 1.9x faster than the best
+   CUDA-core row (48.1 us, db_32x64x16). The operands fit in the 32 MB L2
+   (warm), so this shape is not DRAM-bound here, and the CUDA-core kernel was
+   instruction-bound. Configuration 0 (128 rows) gains nothing (55.3 us), so
+   decode shapes still need their own configuration, and cuBLAS is still 1.6x
+   ahead: split-K (S2) remains the step aimed there.
+3. Tensor pipe active, FMA idle, instructions down at least 5x: **met**
+   (10.5x fewer instructions; FMA 58% -> 4%; tensor 37%). The top stalls are
+   now **math_pipe_throttle** (the GeForce tensor pipe is saturated by the
+   warps that issue) and **long_scoreboard**: one register-prefetch stage does
+   not cover global latency once the math per stage shrinks 8x. NCU also
+   shows **427 K shared-store bank conflicts**: 16-byte stores to rows 80
+   bytes apart put lanes 0 and 7 of each 8-lane phase in the same bank.
+
+**Next step, chosen from this evidence (entry 5, MMA_SYNC):** `mma.sync`
+m16n8k8 with `ldmatrix` fragment loads from an XOR-swizzled shared layout
+(removes both conflict kinds), and a deeper register-prefetch pipeline to
+attack long_scoreboard.

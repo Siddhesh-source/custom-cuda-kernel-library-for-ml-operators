@@ -32,10 +32,26 @@ CCML_API int ccml_matmul_tile_config_count(void);
 
 CCML_API ccml_status ccml_matmul_tile_config_get(int index, ccml_matmul_tile_config* out);
 
-/* `algo` with tile configuration `index`. Valid for the tiled family:
-   CCML_MATMUL_REGISTER_TILED (every configuration), CCML_MATMUL_VECTORIZED and
+/* Tensor Core tile configurations: a BM x BN x BK block tile computed by
+   (bm/wm) x (bn/wn) warps, each owning a wm x wn warp tile. Index 0 is what
+   the algo enum uses. */
+typedef struct ccml_matmul_tc_config {
+  int bm, bn, bk;  /* block tile */
+  int wm, wn;      /* warp tile */
+  int warps;       /* (bm / wm) * (bn / wn) */
+} ccml_matmul_tc_config;
+
+CCML_API int ccml_matmul_tc_config_count(void);
+
+CCML_API ccml_status ccml_matmul_tc_config_get(int index, ccml_matmul_tc_config* out);
+
+/* `algo` with tile configuration `index`. For the CUDA-core tiled family the
+   index is into the tile configurations above: CCML_MATMUL_REGISTER_TILED
+   (every configuration), CCML_MATMUL_VECTORIZED and
    CCML_MATMUL_DOUBLE_BUFFERED (configurations whose TM, TN and BK are
-   multiples of 4; others return CCML_ERROR_INVALID_ARGUMENT). Same contract as ccml_matmul_<dtype>. */
+   multiples of 4; others return CCML_ERROR_INVALID_ARGUMENT). For the Tensor
+   Core family (CCML_MATMUL_WMMA) it is into the Tensor Core configurations.
+   Same contract as ccml_matmul_<dtype>. */
 CCML_API ccml_status ccml_matmul_tuned_f32(float* C, const float* A, const float* B, int M,
                                            int N, int K, ccml_matmul_algo algo, int index,
                                            cudaStream_t stream);

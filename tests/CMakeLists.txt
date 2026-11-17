@@ -53,6 +53,9 @@ ccml_add_test(softmax   test_softmax.cpp)
 # FP16 and BF16 storage for all three operators (reference.md section 3).
 ccml_add_test(dtypes    test_dtypes.cpp)
 
+# Tensor Core matmul variants, FP16 and BF16 (BF16 SKIPs below sm_80).
+ccml_add_test(matmul_tc test_matmul_tc.cpp)
+
 # The benchmark harness's statistics, shape reader and report logic. Built only
 # with the benchmarks, because it links their support library.
 if(CCML_BUILD_BENCHMARKS)

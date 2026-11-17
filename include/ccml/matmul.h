@@ -21,7 +21,10 @@ typedef enum ccml_matmul_algo {
   CCML_MATMUL_TILED = 2, /* shared-memory tiled */
   CCML_MATMUL_REGISTER_TILED = 3, /* block tile + per-thread register tile */
   CCML_MATMUL_VECTORIZED = 4,     /* REGISTER_TILED with 128-bit, conflict-free memory access */
-  CCML_MATMUL_DOUBLE_BUFFERED = 5 /* VECTORIZED + two shared buffers, next tile prefetched */
+  CCML_MATMUL_DOUBLE_BUFFERED = 5, /* VECTORIZED + two shared buffers, next tile prefetched */
+  /* Tensor Cores (16-bit input, FP32 accumulate). f16: sm_70+; bf16: sm_80+;
+     f32 and unsupported architectures return CCML_ERROR_NOT_IMPLEMENTED. */
+  CCML_MATMUL_WMMA = 6            /* nvcuda::wmma 16x16x16 on the double-buffered tiling */
 } ccml_matmul_algo;
 
 CCML_API const char* ccml_matmul_algo_name(ccml_matmul_algo algo);

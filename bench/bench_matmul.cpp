@@ -144,7 +144,11 @@ class DeviceArray {
 /* Every variant the bench times through the algo enum. */
 const ccml_matmul_algo kAlgos[] = {CCML_MATMUL_NAIVE,          CCML_MATMUL_TILED,
                                    CCML_MATMUL_REGISTER_TILED, CCML_MATMUL_VECTORIZED,
-                                   CCML_MATMUL_DOUBLE_BUFFERED};
+                                   CCML_MATMUL_DOUBLE_BUFFERED, CCML_MATMUL_WMMA};
+
+/* The Tensor Core family and its sweep-row prefix. f32 rows report NOT_RUN
+   (no FP32 Tensor Core path on sm_75). */
+const std::pair<ccml_matmul_algo, const char*> kTcFamily[] = {{CCML_MATMUL_WMMA, "wmma_"}};
 
 template <typename D>
 void run_shape(const Options& options, Emitter& emitter, CublasBaseline& cublas,
@@ -226,6 +230,23 @@ void run_shape(const Options& options, Emitter& emitter, CublasBaseline& cublas,
                                 return D::tuned(pc, pa, pb, M, N, K, v, index, stream) ==
                                        CCML_SUCCESS;
                               }});
+      }
+    }
+    /* Tensor Core configurations: <prefix><block tile>_w<warp tile>. */
+    if (D::blas != BlasType::F32) {
+      for (const auto& [variant, prefix] : kTcFamily) {
+        for (int index = 0; index < ccml_matmul_tc_config_count(); ++index) {
+          ccml_matmul_tc_config t;
+          ccml_matmul_tc_config_get(index, &t);
+          const std::string name = prefix + std::to_string(t.bm) + "x" + std::to_string(t.bn) +
+                                   "x" + std::to_string(t.bk) + "_w" + std::to_string(t.wm) +
+                                   "x" + std::to_string(t.wn);
+          const ccml_matmul_algo v = variant;
+          candidates.push_back({"ccml_tiles", name, [=] {
+                                  return D::tuned(pc, pa, pb, M, N, K, v, index, stream) ==
+                                         CCML_SUCCESS;
+                                }});
+        }
       }
     }
   }
