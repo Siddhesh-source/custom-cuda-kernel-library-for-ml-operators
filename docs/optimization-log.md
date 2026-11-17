@@ -682,3 +682,55 @@ test, and it is not claimed until then.
    entry 6) is still worth testing there: at M = 16 the 16x128 grid has 18
    blocks for 14 SMs on sm_89 and 40 SMs on the T4, so the T4 will be
    under-filled.
+
+---
+
+## 6. Matmul: split-K for decode shapes (enhancement S2; `CCML_MATMUL_SPLIT_K`, `CCML_MATMUL_SPLIT_K_ATOMIC`)
+
+**Status:** hypothesis committed before the code.
+
+### Hypothesis
+
+At decode sizes (M <= 16) a matmul is a weight stream: every element of B is
+read once and used for at most 16 rows, so the operation is bound by how fast
+the GPU can pull B from memory, and that needs **every SM** issuing loads.
+MMA_SYNC's 16-row configuration gives one CTA per 128 output columns and walks
+the whole K range inside it: **18 CTAs** for N = 2304 (QKV) and **6** for
+N = 768 (out-proj, FFN-down), against **40 SMs on the T4**. Most SMs sit idle
+and the busy ones each stream a long K serially.
+
+**Change:** split K into S slices; CTA (tile, s) runs the same MMA_SYNC main
+loop over its slice only and writes an FP32 partial tile. S is chosen per call
+so that tiles x S >= 2 x SMs, with at least 4 k-steps (BK = 32) per slice.
+Two reductions, both behind their own algo value:
+
+- `SPLIT_K` (deterministic): partials to an S x M x N FP32 workspace, then a
+  second kernel sums them in fixed slice order and rounds once to the storage
+  type. Same input, same bits, every run.
+- `SPLIT_K_ATOMIC` (**non-deterministic**, enhancement C3): partials
+  `atomicAdd`ed into one zeroed M x N FP32 workspace, then rounded. The order
+  of the additions varies between runs, so the low bits can too.
+
+The workspace comes from the stream-ordered allocator (`cudaMallocAsync` on
+the caller's stream), so no global state is shared between streams; its cost
+is inside every timed call.
+
+**Predictions** (FP16, T4 official; sm_89 has only 14 SMs, so it shows less):
+
+1. Decode shapes whose MMA_SYNC grid is under the SM count (M <= 16 and
+   N/128 < 40: QKV 2304, out-proj 768, FFN-down 768 with K = 3072): SPLIT_K is
+   **1.3-2.5x faster than the best MMA_SYNC configuration**, the gain largest
+   where N is smallest and K largest (FFN-down: 6 CTAs, K = 3072).
+2. On the T4, SPLIT_K **beats cuBLAS GemmEx on at least one decode target
+   shape**, with non-overlapping confidence intervals (reference.md §9, §11).
+3. Shapes whose grid already fills the GPU (M >= 128, or N >= 5120) gain
+   nothing; the heuristic then picks S = 1 and the cost is one extra kernel
+   launch. Not the target, measured anyway.
+4. SPLIT_K_ATOMIC is **at most 10% faster** than SPLIT_K: its saving is only
+   the S x M x N partial traffic, which is small at M <= 16; determinism costs
+   little here.
+
+**What would falsify it:** no gain on the 6-CTA shapes, which would mean the
+kernel is not bandwidth-starved by idle SMs but limited per CTA (e.g. by
+global-load latency with one prefetch stage), or the workspace allocation and
+second launch costing more than the parallelism wins.
