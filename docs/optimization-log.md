@@ -267,7 +267,8 @@ the largest remaining stall (1.50 per issue).
 
 ## 3. Matmul: double buffering (`CCML_MATMUL_DOUBLE_BUFFERED`)
 
-**Status:** hypothesis committed; implementation in progress.
+**Status:** implemented and correct; local sm_89 evidence meets predictions
+1-3. The official T4 timings are pending.
 
 ### Hypothesis
 
@@ -306,12 +307,61 @@ result is recorded as is.
 
 ### Change
 
-*(pending)*
+- `matmul_double_buffered<T, BM, BN, BK, TM, TN, kVec>`: VECTORIZED's layout,
+  `As[2][BK][BM+4]` and `Bs[2][BK][BN]`, fetch / compute / stash, and one
+  barrier per k-step. `CCML_MATMUL_DOUBLE_BUFFERED`, configuration 0; sweep
+  rows `db_*`.
+- 127 registers, **no spills** (`LOCAL:0`), 16.6 KB of shared memory, so
+  occupancy is unchanged.
+- Tests: every compatible configuration on 15 shapes; **every k-step count**
+  (K = 1, 3, 8, 9, 16, 17, 24, 40, 63, 64, 65, 1000: one step, two, odd counts,
+  ragged last step), which is where a single-barrier pipeline would break;
+  misaligned views; FP16 and BF16. All pass.
 
 ### Evidence
 
-*(pending)*
+**Nsight Compute, local sm_89**
+(`profiles/sm_89/matmul/vectorized_vs_double_buffered_*`):
+
+| Metric (2048x4096x1024 / 512x3072x768) | vectorized | double_buffered |
+|---|---|---|
+| Duration under profiler | 4.32 ms / 678 us | **3.54 ms / 511 us** |
+| Stall: long scoreboard (per issue) | 1.46 / 1.20 | **0.022 / 0.026** (-98%) |
+| Stall: barrier | 0.40 / 0.38 | 0.33 / 0.31 |
+| Stall: MIO throttle | 0.09 / 0.07 | 0.33 / 0.28 (shared traffic is denser in time) |
+| Top stall | — | **not_selected** 2.25 / 2.10 (warps ready, waiting for the scheduler) |
+| FMA pipe active | 51% / 52% | **63% / 62%** |
+| Registers, warps active | 128, 33% | 127, 33% |
+
+**Timings, local sm_89 (indicative), FP32, warm L2, one interleaved run**
+(`results/sm_89/double_buffered_*.csv`; the clock is recorded per row):
+
+| Shape | vectorized | double_buffered | best db config | cuBLAS |
+|---|---|---|---|---|
+| 512x3072x768 (all 2550 MHz) | 572 us | **444 us (1.29x), 62.4% of peak** | cfg 0 | 437 us (63.4%) |
+| 2048x4096x1024 | 3,928 us @ 2535 MHz | **3,349 us (1.17x)** @ 2535 MHz | cfg 0 | 3,517 us **@ 2220 MHz** * |
+| 16x2304x768 (all 2565 MHz) | 138 us | 121 us | **32x64x16: 36.9 us** | 39.9 us |
+
+\* The laptop's clock fell during the run, so the cuBLAS row ran 12% slower
+than ours. Clock-normalized, cuBLAS is still ahead (about 3,080 us at 2535
+MHz). **This is not a win and is not claimed as one.**
 
 ### Verdict
 
-*(pending)*
+**Kept.**
+
+1. long_scoreboard falls by at least a third, and barrier stalls fall:
+   **met**, by far: -98% and -18%.
+2. 1.05-1.20x over VECTORIZED: **met or exceeded** (1.17x and 1.29x on the
+   large shapes).
+3. Decode shapes do not change measurably: **not quite**. Configuration 0 went
+   from 138 to 121 us. The decode-sized tile is the real story there: at
+   **36.9 us it is 1.08x faster than cuBLAS on this GPU at identical clocks**,
+   the first shape-level win of the project. It is indicative only until the
+   T4 confirms it, and that is the official test.
+
+**Where the kernel stands (sm_89, indicative):** at parity with cuBLAS on
+512x3072x768 (444 vs 437 us), and about 8% behind on the largest shape after
+clock correction. FMA-pipe utilization (63%) and occupancy (33%) are now the
+limits. The remaining reference.md ladder step is Tensor Cores (Phase 11),
+which changes the compute ceiling itself.
