@@ -523,3 +523,56 @@ real test of prediction 1.
 m16n8k8 with `ldmatrix` fragment loads from an XOR-swizzled shared layout
 (removes both conflict kinds), and a deeper register-prefetch pipeline to
 attack long_scoreboard.
+
+---
+
+## 5. Matmul: `mma.sync` m16n8k8 + `ldmatrix` on a swizzled layout (`CCML_MATMUL_MMA_SYNC`)
+
+**Status:** hypothesis committed before the code.
+
+### Hypothesis
+
+Entry 4's profile names two costs that WMMA's API leaves out of reach:
+
+- **Shared-memory bank conflicts: 427,599 on stores, 60,557 on loads**
+  (512x3072x768, sm_89). Rows padded to 80 bytes put two lanes of each 8-lane
+  128-bit store phase in one bank, and `load_matrix_sync` reads from the same
+  padded rows. The fragment layout is opaque, so the shared layout cannot be
+  arranged around it.
+- **Shared memory caps occupancy on the T4.** The padded tiles take 37.9 KB
+  per block. The T4 has 64 KB per SM, so one block (8 warps) is resident, and
+  `long_scoreboard` (6.8 per issue) shows those warps waiting on global loads
+  with nothing else to run.
+
+**Change:** the same tiling and register-prefetch double buffering, with the
+inner product written in PTX:
+
+1. `mma.sync.aligned.m16n8k8.row.col.f32.f16.f16.f32` (BF16: `.bf16`, sm_80+).
+   The register layout of every fragment is documented, so the epilogue writes
+   accumulators straight to global memory (no scratch tile).
+2. Fragments loaded with `ldmatrix.sync.aligned.m8n8.x4` (A) and `.x4.trans`
+   (B, stored row-major [K][N]): one instruction fills the A operands of two
+   k8 steps, or the B operands of two n8 tiles over two k8 steps.
+3. **No padding; an XOR swizzle instead.** The 16-byte chunk `c` of row `r` is
+   stored at chunk `c ^ f(r)`, where f(r) spreads the eight rows one
+   `ldmatrix` phase reads over all 32 banks. Stores of 8 consecutive threads
+   still fill 128 contiguous bytes. Shared memory per block falls from 37.9 KB
+   to **32 KB**, so **two blocks fit per T4 SM** if registers stay at or below
+   128.
+
+**Predictions** (FP16, warm L2; official on the T4, indicative on sm_89):
+
+1. Shared-memory bank conflicts, load and store, fall **to near zero** on the
+   profiled shape (from 60.6 K and 427.6 K).
+2. Large shapes (M >= 512): **1.15-1.5x faster than WMMA**, and at least
+   **0.7x of cuBLAS GemmEx** on the T4 (sm_89: at least 0.9x). On the T4 part
+   of the gain comes from the second resident block; on sm_89, where shared
+   memory allowed two blocks already, only from the conflicts and the leaner
+   epilogue, so the sm_89 gain is the smaller one.
+3. Decode shapes (M <= 16) **do not change measurably**: they are limited by
+   rows a 16-row MMA wastes and by the grid being smaller than the GPU.
+
+**What would falsify it:** conflicts remaining (the swizzle is wrong), or no
+speedup despite conflict-free shared memory, which would mean global-load
+latency with only one prefetch stage is the limit; the remedy would then be a
+deeper pipeline (cp.async multistage on sm_80+, docs/local.md L2).
