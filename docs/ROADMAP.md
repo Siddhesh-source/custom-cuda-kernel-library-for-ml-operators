@@ -37,7 +37,7 @@ Status key: ✅ compliant · 🟡 partial · ❌ missing · ⚠️ contradicts s
 | 18 | Experiments: tile sweep, shape sweep (+odd shapes), dtype comparison, occupancy vs registers, vectorized vs scalar, fusion vs separate, end-to-end model latency | R§5 | 🟡 | Done for matmul: tile sweep (16 configs x 76 shapes), shape sweep incl. odd, occupancy vs registers (NCU, entry 2), vectorized vs scalar (entry 2). Remaining: dtype comparison, fusion vs separate, end-to-end latency |
 | 19 | Roofline plots | R§10 | ❌ | — |
 | 20 | Technical report + demo notebook | R§10 | ❌ | — |
-| 21 | ≥1 operator beats vendor on a target shape, or documented why not | R§9 | ✅ | matmul beats cuBLAS on 2 target shapes on the T4 with the vendor at a higher clock (1.15x, 1.07x) ([phases 9-10](results/phase-9-10-matmul-ladder.md)). Was: | Phase 7 baseline: ours vs best baseline median 0.17x (matmul), 0.31x (layernorm), 0.23x (softmax); only 2 tiny odd matmul shapes faster |
+| 21 | ≥1 operator beats vendor on a target shape, or documented why not | R§9 | ✅ | matmul beats cuBLAS on 2 target shapes on the T4 with the vendor at a higher clock (1.15x, 1.07x) ([phases 9-10](results/phase-9-10-matmul-ladder.md)). Phase 7 baseline was: ours vs best baseline median 0.17x (matmul), 0.31x (layernorm), 0.23x (softmax); only 2 tiny odd matmul shapes faster |
 | 22 | Kernel library with build system | R§10 | ✅ | CMake, presets, `find_package` |
 | 23 | Never report speed for a kernel failing tests | R§11 | ✅ | Enforced in code: a non-PASS row carries no timing (tested). It caught a real bug in our Triton baseline |
 
