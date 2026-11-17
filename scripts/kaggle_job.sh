@@ -68,9 +68,11 @@ run_op() {
     local extra=()
     # The naive matmul is ~20x slower than cuBLAS; above 5 GFLOP per call it
     # adds tens of minutes and no information (rows say NOT_RUN).
-    # Matmul also times every REGISTER_TILED tile configuration (reference.md
-    # section 5: tile and block size sweep).
-    [ "$op" = "matmul" ] && extra=(--naive-max-gflop 5 --tile-sweep)
+    # Matmul also times every tile configuration of the tiled family
+    # (reference.md section 5: tile and block size sweep) and every storage
+    # type (section 5: dtype comparison); CCML_MATMUL_DTYPES narrows the list.
+    [ "$op" = "matmul" ] && extra=(--naive-max-gflop 5 --tile-sweep
+                                   --dtype "${CCML_MATMUL_DTYPES:-f32,f16,bf16}")
     [ "$IMPLS" != "all" ] && extra+=(--impls "$IMPLS")
     "$BIN/ccml_bench_$op" --peaks "$peaks" --out "$RES/$op.csv" "${extra[@]}" \
       2> "$OUT/logs/bench_$op.log"
@@ -90,6 +92,7 @@ run_op() {
     step "Python baselines: $op (${py_impls[*]}, compile mode $mode)"
     "$PY" "$SRC/scripts/bench_torch.py" --out-dir "$RES" --peaks "$peaks" --ops "$op" \
       --impls "$(IFS=,; echo "${py_impls[*]}")" --compile-mode "$mode" \
+      --matmul-dtypes "${CCML_MATMUL_DTYPES:-f32,f16,bf16}" \
       2> "$OUT/logs/bench_torch_$op.log"
     echo "exit $?"; tail -5 "$OUT/logs/bench_torch_$op.log"
   fi

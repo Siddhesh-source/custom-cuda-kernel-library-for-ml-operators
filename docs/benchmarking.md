@@ -123,7 +123,21 @@ op,impl,algo,dtype,tag,M,N,K,rows,cols,cache,iters,median_us,p10_us,p90_us,iqr_u
 - `gate`: `PASS`, `FAIL` or `NOT_RUN` (an unbuilt variant or an unavailable baseline). **Only `PASS` rows carry timings**. The rule is enforced in the row writer itself and covered by a test.
 - `batched_mean_us`: the spec's batched event pattern (warm rows only), as a cross-check on the per-iteration median.
 - `clock_reasons`: the raw NVML clock-event bitmask. `throttled` = 1 for thermal or hardware slowdown. Power capping is recorded in the mask but not flagged, because a T4 at its 70 W limit is its normal operating state.
-- `pct_peak_*` for matmul are against the FP32 CUDA-core peak, so they are filled for `f32` only.
+- `pct_peak_*` for matmul are against the ceiling of the row's dtype
+  (`matmul_peak_tflops` in `bench/support/metrics.h`, mirrored in
+  `scripts/benchlib.py`): `f32` against the FP32 CUDA-core peak, `f16` against
+  the FP16 Tensor Core peak (FP32 accumulate; T4: 40 SMs × 1024 FLOP/clk ×
+  1.59 GHz = 65.1 TFLOPS), and `bf16` against the BF16 Tensor Core peak where
+  one exists (sm_80+), otherwise the FP32 peak, because on sm_75 BF16 can only
+  be computed by widening to FP32. A CUDA-core FP16 kernel is therefore judged
+  against the Tensor Core ceiling: that is the hardware's real limit for the
+  dtype. `ccml_bench_peaks` measures the Tensor Core rate with a WMMA
+  microbenchmark (`tc_f16_tflops_measured`, `tc_bf16_tflops_measured`).
+- Matmul runs every storage type in one CSV (`--dtype f32,f16,bf16`; the
+  Kaggle job sets all three, `CCML_MATMUL_DTYPES` narrows it). FP16/BF16
+  inputs are rounded first and the fp64 reference uses the rounded values; the
+  vendor baseline is `cublasGemmEx` / cuBLASLt with 16-bit storage and FP32
+  compute. `bench_torch.py --matmul-dtypes` does the same for PyTorch.
 - An empty timing cell means the work did not run. It is never written as zero.
 
 ## Profiling [reference.md, Method and §9]

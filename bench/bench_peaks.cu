@@ -11,7 +11,12 @@
 #include <string>
 #include <vector>
 
+#include <type_traits>
+
+#include <cuda_bf16.h>
+#include <cuda_fp16.h>
 #include <cuda_runtime.h>
+#include <mma.h>
 
 #include "bench/support/metrics.h"
 #include "bench/support/stats.h"
@@ -45,6 +50,58 @@ __global__ void fma_peak(float* sink, float seed) {
   /* Never true for these inputs, but the compiler cannot prove it, so the
      arithmetic above cannot be eliminated. */
   if (total == 12345.678f) sink[blockIdx.x * blockDim.x + threadIdx.x] = total;
+}
+
+/* Tensor Core throughput: each warp runs kTcChains independent WMMA
+   16x16x16 accumulations (16-bit in, FP32 accumulate) back to back, so the
+   Tensor Core pipe never waits on a dependency. Compiled only where the input
+   type has Tensor Cores (FP16: sm_70+, BF16: sm_80+); elsewhere the body is
+   empty and the host does not run it (tc_kernel_compiled below). */
+constexpr int kTcChains = 4;
+constexpr int kTcIters = 2048;
+
+template <typename T>
+__global__ void tc_peak(float* sink, int flag) {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 700
+  constexpr bool kBf16 = std::is_same<T, __nv_bfloat16>::value;
+#if __CUDA_ARCH__ < 800
+  if constexpr (!kBf16)
+#endif
+  {
+    using namespace nvcuda;
+    wmma::fragment<wmma::matrix_a, 16, 16, 16, T, wmma::row_major> a;
+    wmma::fragment<wmma::matrix_b, 16, 16, 16, T, wmma::col_major> b;
+    wmma::fragment<wmma::accumulator, 16, 16, 16, float> c[kTcChains];
+    for (int i = 0; i < a.num_elements; ++i) a.x[i] = static_cast<T>(0.001f * (threadIdx.x % 7));
+    for (int i = 0; i < b.num_elements; ++i) b.x[i] = static_cast<T>(0.001f * (threadIdx.x % 5));
+#pragma unroll
+    for (int c_ = 0; c_ < kTcChains; ++c_) wmma::fill_fragment(c[c_], 0.0f);
+    for (int i = 0; i < kTcIters; ++i) {
+#pragma unroll
+      for (int c_ = 0; c_ < kTcChains; ++c_) wmma::mma_sync(c[c_], a, b, c[c_]);
+    }
+    /* `flag` is 0 at run time, but the compiler cannot know that, so the
+       accumulations cannot be eliminated. */
+    if (flag) {
+#pragma unroll
+      for (int c_ = 0; c_ < kTcChains; ++c_) {
+        wmma::store_matrix_sync(sink + (blockIdx.x * kTcChains + c_) * 256, c[c_], 16,
+                                wmma::mem_row_major);
+      }
+    }
+  }
+#else
+  (void)sink;
+  (void)flag;
+#endif
+}
+
+/* True if `kernel` was compiled for an architecture of at least `arch` (e.g.
+   80) in the binary loaded for this device. */
+template <typename Kernel>
+bool tc_kernel_compiled(Kernel kernel, int arch) {
+  cudaFuncAttributes attr{};
+  return cudaFuncGetAttributes(&attr, kernel) == cudaSuccess && attr.binaryVersion >= arch;
 }
 
 __global__ void copy_peak(float4* __restrict__ dst, const float4* __restrict__ src,
@@ -121,6 +178,23 @@ int main(int argc, char** argv) {
     const double tflops = flops / (fma_ms * 1e-3) / 1e12;
     cudaFree(sink);
 
+    /* Tensor Cores: 8 warps per block, 8 blocks per SM. 0 = not available. */
+    auto tc_measure = [&](auto kernel, int min_arch, bool supported) -> double {
+      if (!supported || !tc_kernel_compiled(kernel, min_arch)) return 0.0;
+      const int tc_blocks = info.multiprocessor_count * 8;
+      const int tc_threads = 256;
+      float* tc_sink = nullptr;
+      check(cudaMalloc(&tc_sink, sizeof(float) * tc_blocks * kTcChains * 256), "cudaMalloc tc");
+      const double ms = median_ms([&] { kernel<<<tc_blocks, tc_threads>>>(tc_sink, 0); }, 20);
+      cudaFree(tc_sink);
+      const double warps = static_cast<double>(tc_blocks) * (tc_threads / 32);
+      return 2.0 * 16 * 16 * 16 * kTcChains * kTcIters * warps / (ms * 1e-3) / 1e12;
+    };
+    const double tc_f16 = tc_measure(tc_peak<__half>, 70, theory.tc_f16_tflops_theory > 0.0);
+    const ccml_bench::Telemetry during_tc = telemetry.sample();
+    const double tc_bf16 =
+        tc_measure(tc_peak<__nv_bfloat16>, 80, theory.tc_bf16_tflops_theory > 0.0);
+
     /* Bandwidth: a copy far larger than L2, sized to the free memory. */
     std::size_t free_bytes = 0, total = 0;
     check(cudaMemGetInfo(&free_bytes, &total), "cudaMemGetInfo");
@@ -139,22 +213,29 @@ int main(int argc, char** argv) {
     cudaFree(src);
     cudaFree(dst);
 
-    char json[1536];
+    char json[2048];
     std::snprintf(json, sizeof(json),
                   "{\n  \"gpu\": \"%s\",\n  \"cc\": \"%d.%d\",\n"
                   "  \"fp32_tflops_theory\": %.4f,\n  \"fp32_tflops_measured\": %.4f,\n"
+                  "  \"tc_f16_tflops_theory\": %.4f,\n  \"tc_f16_tflops_measured\": %.4f,\n"
+                  "  \"tc_bf16_tflops_theory\": %.4f,\n  \"tc_bf16_tflops_measured\": %.4f,\n"
                   "  \"bandwidth_gbps_theory\": %.2f,\n  \"bandwidth_gbps_measured\": %.2f,\n"
-                  "  \"sm_clock_mhz_during_fma\": %d,\n  \"sm_clock_mhz_during_copy\": %d,\n"
+                  "  \"sm_clock_mhz_during_fma\": %d,\n  \"sm_clock_mhz_during_tc\": %d,\n"
+                  "  \"sm_clock_mhz_during_copy\": %d,\n"
                   "  \"max_sm_clock_mhz\": %d,\n  \"clock_reasons_during_fma\": \"0x%llx\",\n"
+                  "  \"clock_reasons_during_tc\": \"0x%llx\",\n"
                   "  \"copy_bytes\": %zu,\n  \"method\": \"%.0f ms GPU-time warmup, then median "
-                  "of event-timed runs; fma: %d chains x %d iters; copy: float4 grid-stride, "
-                  "read+write\"\n}\n",
+                  "of event-timed runs; fma: %d chains x %d iters; tensor cores: wmma "
+                  "16x16x16 fp32-accumulate, %d chains x %d iters per warp; copy: float4 "
+                  "grid-stride, read+write\"\n}\n",
                   info.name, info.compute_major, info.compute_minor,
-                  theory.fp32_tflops_theory, tflops, theory.bandwidth_gbps_theory, gbps,
-                  during_fma.sm_clock_mhz, during_copy.sm_clock_mhz,
+                  theory.fp32_tflops_theory, tflops, theory.tc_f16_tflops_theory, tc_f16,
+                  theory.tc_bf16_tflops_theory, tc_bf16, theory.bandwidth_gbps_theory, gbps,
+                  during_fma.sm_clock_mhz, during_tc.sm_clock_mhz, during_copy.sm_clock_mhz,
                   telemetry.max_sm_clock_mhz() > 0 ? telemetry.max_sm_clock_mhz()
                                                    : info.clock_khz / 1000,
-                  during_fma.reasons, bytes, kWarmupMs, kChains, kFmaIters);
+                  during_fma.reasons, during_tc.reasons, bytes, kWarmupMs, kChains, kFmaIters,
+                  kTcChains, kTcIters);
     std::fputs(json, stdout);
     if (!out_path.empty()) {
       std::FILE* f = std::fopen(out_path.c_str(), "w");

@@ -77,13 +77,13 @@ std::string csv_row(const Row& row, const RunContext& ctx) {
   const double tflops = timed && is_matmul ? row.flops / seconds / 1e12 : 0.0;
   const double gbps = timed ? row.bytes / seconds / 1e9 : 0.0;
   const double achieved = is_matmul ? tflops : gbps;
-  const double theory = is_matmul ? ctx.peaks.fp32_tflops_theory
+  /* Matmul: the dtype's own compute ceiling (FP32 cores, or Tensor Cores for
+     16-bit inputs; see matmul_peak_tflops). Row-wise ops: DRAM bandwidth. */
+  const double theory = is_matmul ? matmul_peak_tflops(ctx.peaks, row.dtype, false)
                                   : ctx.peaks.bandwidth_gbps_theory;
-  const double measured = is_matmul ? ctx.peaks.fp32_tflops_measured
+  const double measured = is_matmul ? matmul_peak_tflops(ctx.peaks, row.dtype, true)
                                     : ctx.peaks.bandwidth_gbps_measured;
-  /* Only FP32 has a CUDA-core peak to compare against; the Tensor Core peaks
-     for FP16/BF16 are added with the Tensor Core kernels. */
-  const bool peak_applies = timed && (!is_matmul || row.dtype == "f32");
+  const bool peak_applies = timed;
 
   std::ostringstream os;
   os << row.op << ',' << row.impl << ',' << row.algo << ',' << row.dtype << ','
@@ -125,6 +125,11 @@ void print_context(std::FILE* out, const RunContext& ctx,
                "bandwidth %.1f GB/s theoretical, %.1f measured (0 = not measured)\n",
                ctx.peaks.fp32_tflops_theory, ctx.peaks.fp32_tflops_measured,
                ctx.peaks.bandwidth_gbps_theory, ctx.peaks.bandwidth_gbps_measured);
+  std::fprintf(out, "# tensor core peaks (16-bit in, fp32 accumulate): f16 %.3f TFLOPS "
+               "theoretical, %.3f measured; bf16 %.3f theoretical, %.3f measured "
+               "(0 = none on this GPU or not measured)\n",
+               ctx.peaks.tc_f16_tflops_theory, ctx.peaks.tc_f16_tflops_measured,
+               ctx.peaks.tc_bf16_tflops_theory, ctx.peaks.tc_bf16_tflops_measured);
   std::fprintf(out, "# telemetry: %s; other compute processes on GPU: %d\n",
                telemetry.available() ? "NVML" : "unavailable",
                telemetry.other_processes());

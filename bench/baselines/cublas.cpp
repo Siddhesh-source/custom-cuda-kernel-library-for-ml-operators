@@ -26,6 +26,14 @@ void check_blas(cublasStatus_t status, const char* what) {
 cublasHandle_t blas(void* h) { return static_cast<cublasHandle_t>(h); }
 cublasLtHandle_t lt(void* h) { return static_cast<cublasLtHandle_t>(h); }
 
+cudaDataType_t data_type(BlasType t) {
+  switch (t) {
+    case BlasType::F16: return CUDA_R_16F;
+    case BlasType::BF16: return CUDA_R_16BF;
+    default: return CUDA_R_32F;
+  }
+}
+
 }  // namespace
 
 struct CublasBaseline::LtPlan {
@@ -63,6 +71,15 @@ bool CublasBaseline::sgemm(float* C, const float* A, const float* B, int M, int 
                      N, A, K, &beta, C, N) == CUBLAS_STATUS_SUCCESS;
 }
 
+bool CublasBaseline::gemm_ex(void* C, const void* A, const void* B, int M, int N, int K,
+                             BlasType type) {
+  const float alpha = 1.0f, beta = 0.0f;
+  const cudaDataType_t t = data_type(type);
+  return cublasGemmEx(blas(handle_), CUBLAS_OP_N, CUBLAS_OP_N, N, M, K, &alpha, B, t, N, A, t,
+                      K, &beta, C, t, N, CUBLAS_COMPUTE_32F,
+                      CUBLAS_GEMM_DEFAULT) == CUBLAS_STATUS_SUCCESS;
+}
+
 void CublasBaseline::release_lt() {
   if (lt_ == nullptr) return;
   if (lt_->a) cublasLtMatrixLayoutDestroy(lt_->a);
@@ -73,16 +90,18 @@ void CublasBaseline::release_lt() {
   lt_ = nullptr;
 }
 
-bool CublasBaseline::lt_prepare(int M, int N, int K) {
+bool CublasBaseline::lt_prepare(int M, int N, int K, BlasType type) {
   release_lt();
   lt_ = new LtPlan();
+  const cudaDataType_t t = data_type(type);
   try {
+    /* Scale type FP32 (alpha and beta are floats) with FP32 compute. */
     check_blas(cublasLtMatmulDescCreate(&lt_->op, CUBLAS_COMPUTE_32F, CUDA_R_32F),
                "cublasLtMatmulDescCreate");
     /* Column-major view: first operand B^T [N,K], second A^T [K,M], out [N,M]. */
-    check_blas(cublasLtMatrixLayoutCreate(&lt_->b, CUDA_R_32F, N, K, N), "layout B");
-    check_blas(cublasLtMatrixLayoutCreate(&lt_->a, CUDA_R_32F, K, M, K), "layout A");
-    check_blas(cublasLtMatrixLayoutCreate(&lt_->c, CUDA_R_32F, N, M, N), "layout C");
+    check_blas(cublasLtMatrixLayoutCreate(&lt_->b, t, N, K, N), "layout B");
+    check_blas(cublasLtMatrixLayoutCreate(&lt_->a, t, K, M, K), "layout A");
+    check_blas(cublasLtMatrixLayoutCreate(&lt_->c, t, N, M, N), "layout C");
 
     cublasLtMatmulPreference_t pref = nullptr;
     check_blas(cublasLtMatmulPreferenceCreate(&pref), "preference");
@@ -108,7 +127,7 @@ bool CublasBaseline::lt_prepare(int M, int N, int K) {
   }
 }
 
-bool CublasBaseline::lt_matmul(float* C, const float* A, const float* B) {
+bool CublasBaseline::lt_matmul(void* C, const void* A, const void* B) {
   if (lt_ == nullptr) return false;
   const float alpha = 1.0f, beta = 0.0f;
   return cublasLtMatmul(lt(lt_handle_), lt_->op, &alpha, B, lt_->b, A, lt_->a,

@@ -15,7 +15,8 @@ namespace {
                "[--cache warm|cold|both] [--filter TEXT]\n"
                "       [--warmup N] [--max-iters N] [--min-iters N] "
                "[--budget-ms X] [--rounds N]\n"
-               "       [--impls a,b] [--naive-max-gflop X] [--tile-sweep]\n",
+               "       [--impls a,b] [--naive-max-gflop X] [--tile-sweep] "
+               "[--dtype f32,f16,bf16]\n",
                why);
   std::exit(2);
 }
@@ -50,6 +51,20 @@ Options parse_options(int argc, char** argv) {
     else if (arg == "--impls") o.impls = value();
     else if (arg == "--naive-max-gflop") o.naive_max_gflop = std::atof(value().c_str());
     else if (arg == "--tile-sweep") o.tile_sweep = true;
+    else if (arg == "--dtype") {
+      o.dtypes.clear();
+      const std::string v = value();
+      std::size_t start = 0;
+      while (start <= v.size()) {
+        const std::size_t comma = v.find(',', start);
+        const std::string d = v.substr(start, comma == std::string::npos ? std::string::npos
+                                                                         : comma - start);
+        if (d != "f32" && d != "f16" && d != "bf16") usage("--dtype takes f32, f16, bf16");
+        o.dtypes.push_back(d);
+        if (comma == std::string::npos) break;
+        start = comma + 1;
+      }
+    }
     else usage(("unknown argument " + arg).c_str());
   }
   if (o.timing.min_iters < 100) {
@@ -68,6 +83,19 @@ bool Options::wants(const std::string& impl) const {
 Gated gate(const Candidate& candidate, const float* output, std::size_t count,
            const std::vector<double>& reference,
            const ccml_test::Tolerance& tolerance, cudaStream_t stream) {
+  return gate(
+      candidate,
+      [&](std::vector<float>& got) {
+        got.resize(count);
+        return cudaMemcpy(got.data(), output, count * sizeof(float), cudaMemcpyDeviceToHost) ==
+               cudaSuccess;
+      },
+      reference, tolerance, stream);
+}
+
+Gated gate(const Candidate& candidate, const std::function<bool(std::vector<float>&)>& fetch,
+           const std::vector<double>& reference, const ccml_test::Tolerance& tolerance,
+           cudaStream_t stream) {
   Gated g;
   g.candidate = candidate;
   if (!candidate.launch() || cudaGetLastError() != cudaSuccess ||
@@ -75,9 +103,8 @@ Gated gate(const Candidate& candidate, const float* output, std::size_t count,
     g.gate = GateResult::NotRun;
     return g;
   }
-  std::vector<float> got(count);
-  if (cudaMemcpy(got.data(), output, count * sizeof(float),
-                 cudaMemcpyDeviceToHost) != cudaSuccess) {
+  std::vector<float> got;
+  if (!fetch(got)) {
     g.gate = GateResult::NotRun;
     return g;
   }

@@ -2,6 +2,7 @@
 #define CCML_BENCH_SUPPORT_DRIVER_H
 
 #include <cstdio>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -25,6 +26,8 @@ namespace ccml_bench {
  *                   (its rows are reported NOT_RUN)
  *   --tile-sweep    matmul: also time every REGISTER_TILED tile configuration
  *                   (reference.md section 5, tile and block size sweep)
+ *   --dtype LIST    matmul: storage types to run, comma-separated, from
+ *                   f32, f16, bf16 (default f32). One CSV, dtype column set.
  */
 struct Options {
   std::string  shapes;
@@ -36,6 +39,7 @@ struct Options {
   std::string  impls;              /* empty = all */
   double       naive_max_gflop = 0.0;  /* 0 = no limit */
   bool         tile_sweep = false;
+  std::vector<std::string> dtypes = {"f32"};
   TimingConfig timing;
 
   bool wants(const std::string& impl) const;
@@ -57,6 +61,12 @@ struct Gated {
 Gated gate(const Candidate& candidate, const float* output, std::size_t count,
            const std::vector<double>& reference,
            const ccml_test::Tolerance& tolerance, cudaStream_t stream);
+
+/* Same, for any storage type: `fetch` downloads the output widened to float
+   and returns false if it could not. */
+Gated gate(const Candidate& candidate, const std::function<bool(std::vector<float>&)>& fetch,
+           const std::vector<double>& reference, const ccml_test::Tolerance& tolerance,
+           cudaStream_t stream);
 
 /* Writes all rows of one shape: every gated candidate, for each requested
    cache mode, timing only those that passed. */

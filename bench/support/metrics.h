@@ -24,12 +24,33 @@ double softmax_bytes(long long rows, long long cols, int elem_bytes);
    which makes the theoretical peak "unknown" rather than wrong. */
 int fp32_cores_per_sm(int major, int minor);
 
+/* Dense Tensor Core FLOPs per clock per SM with 16-bit inputs and FP32
+   accumulation (the mode every ccml and cuBLAS 16-bit matmul here uses).
+   0 = no Tensor Cores for that input type on that architecture (BF16 needs
+   8.0+). By compute capability, so SKUs that share one are ambiguous: 7.5 is
+   the T4's rate (GeForce Turing runs FP32 accumulation at half of it); 8.6 and
+   8.9 are the GeForce rates (the data-centre A10/L4 run twice as fast). The
+   measured peak from ccml_bench_peaks settles it for the GPU actually used. */
+int tc_flops_per_clock_per_sm(int major, int minor, bool bf16);
+
 struct DevicePeaks {
   double fp32_tflops_theory  = 0.0;  /* SMs x lanes x 2 x max SM clock */
   double bandwidth_gbps_theory = 0.0; /* 2 (DDR) x memory clock x bus width */
   double fp32_tflops_measured  = 0.0; /* from bench_peaks; 0 = not measured */
   double bandwidth_gbps_measured = 0.0;
+  /* Tensor Core ceilings, FP16/BF16 in, FP32 accumulate. 0 = not available. */
+  double tc_f16_tflops_theory = 0.0;
+  double tc_bf16_tflops_theory = 0.0;
+  double tc_f16_tflops_measured = 0.0;
+  double tc_bf16_tflops_measured = 0.0;
 };
+
+/* The compute ceiling a matmul of `dtype` ("f32", "f16", "bf16") is judged
+   against: FP32 -> the CUDA-core FP32 peak; FP16 -> the FP16 Tensor Core peak;
+   BF16 -> the BF16 Tensor Core peak where it exists, otherwise the FP32 peak
+   (on sm_75 BF16 can only be computed by widening to FP32, so that is the
+   hardware's real ceiling for it). Returns 0 when unknown. */
+double matmul_peak_tflops(const DevicePeaks& peaks, const std::string& dtype, bool measured);
 
 /* `max_sm_clock_mhz` overrides the CUDA clock attribute when it is HIGHER:
    laptop and consumer GPUs boost above the clock CUDA reports (measured: an
