@@ -280,6 +280,7 @@ const int kRowShapes[][2] = {{1, 1}, {7, 33}, {64, 768}, {128, 1025}, {16, 4096}
       check_matmul<D>(ctx, s[0], s[1], s[2], CCML_MATMUL_TILED);                 \
       check_matmul<D>(ctx, s[0], s[1], s[2], CCML_MATMUL_REGISTER_TILED);        \
       check_matmul<D>(ctx, s[0], s[1], s[2], CCML_MATMUL_VECTORIZED);            \
+      check_matmul<D>(ctx, s[0], s[1], s[2], CCML_MATMUL_DOUBLE_BUFFERED);       \
     }                                                                            \
   }                                                                              \
   CCML_TEST(dtypes, D##_layernorm) {                                             \

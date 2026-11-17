@@ -102,6 +102,37 @@ ccml_status launch_vectorized(T* C, const T* A, const T* B, int M, int N, int K,
 }
 
 template <typename T, int I>
+ccml_status launch_double_buffered(T* C, const T* A, const T* B, int M, int N, int K,
+                                   cudaStream_t stream) {
+  constexpr MatmulTileConfig cfg = kMatmulTileConfigs[I];
+  if constexpr (cfg.tm % 4 != 0 || cfg.tn % 4 != 0 || cfg.bk % 4 != 0) {
+    ccml::detail::set_last_error(
+        "ccml_matmul: DOUBLE_BUFFERED needs a tile configuration whose TM, TN and BK are "
+        "multiples of 4");
+    return CCML_ERROR_INVALID_ARGUMENT;
+  } else {
+    /* Same vector-path preconditions as VECTORIZED. */
+    const std::size_t vec_bytes = 4 * sizeof(T);
+    const bool vec = K % 4 == 0 && N % 4 == 0 && aligned(A, vec_bytes) &&
+                     aligned(B, vec_bytes) && aligned(C, vec_bytes);
+    const ccml::detail::LaunchConfig config = tile_launch_config(cfg, M, N);
+    if (vec) {
+      void (*const matmul_double_buffered)(T*, const T*, const T*, int, int, int) =
+          &ccml::kernels::matmul_double_buffered<T, cfg.bm, cfg.bn, cfg.bk, cfg.tm, cfg.tn,
+                                                 true>;
+      CCML_LAUNCH(matmul_double_buffered, config, stream, C, A, B, M, N, K);
+    } else {
+      void (*const matmul_double_buffered_scalar_global)(T*, const T*, const T*, int, int,
+                                                         int) =
+          &ccml::kernels::matmul_double_buffered<T, cfg.bm, cfg.bn, cfg.bk, cfg.tm, cfg.tn,
+                                                 false>;
+      CCML_LAUNCH(matmul_double_buffered_scalar_global, config, stream, C, A, B, M, N, K);
+    }
+    return CCML_SUCCESS;
+  }
+}
+
+template <typename T, int I>
 ccml_status launch_tiled_family(ccml_matmul_algo algo, T* C, const T* A, const T* B, int M,
                                 int N, int K, cudaStream_t stream) {
   switch (algo) {
@@ -109,10 +140,12 @@ ccml_status launch_tiled_family(ccml_matmul_algo algo, T* C, const T* A, const T
       return launch_register_tiled<T, I>(C, A, B, M, N, K, stream);
     case CCML_MATMUL_VECTORIZED:
       return launch_vectorized<T, I>(C, A, B, M, N, K, stream);
+    case CCML_MATMUL_DOUBLE_BUFFERED:
+      return launch_double_buffered<T, I>(C, A, B, M, N, K, stream);
     default:
       ccml::detail::set_last_error(
           "ccml_matmul: this algorithm has no tile configurations "
-          "(only REGISTER_TILED and VECTORIZED do)");
+          "(only REGISTER_TILED, VECTORIZED and DOUBLE_BUFFERED do)");
       return CCML_ERROR_INVALID_ARGUMENT;
   }
 }
@@ -163,6 +196,7 @@ ccml_status matmul(Public* C_pub, const Public* A_pub, const Public* B_pub, int 
 
     case CCML_MATMUL_REGISTER_TILED:
     case CCML_MATMUL_VECTORIZED:
+    case CCML_MATMUL_DOUBLE_BUFFERED:
       /* Configuration 0 until the tile sweep decides per shape (S4). */
       return tiled_family(resolve(algo), C, A, B, M, N, K, /*index=*/0, stream);
 
@@ -196,6 +230,7 @@ const char* ccml_matmul_algo_name(ccml_matmul_algo algo) {
     case CCML_MATMUL_TILED:          return "tiled";
     case CCML_MATMUL_REGISTER_TILED: return "register_tiled";
     case CCML_MATMUL_VECTORIZED:     return "vectorized";
+    case CCML_MATMUL_DOUBLE_BUFFERED: return "double_buffered";
   }
   return "unknown";
 }

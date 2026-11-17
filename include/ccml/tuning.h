@@ -33,9 +33,9 @@ CCML_API int ccml_matmul_tile_config_count(void);
 CCML_API ccml_status ccml_matmul_tile_config_get(int index, ccml_matmul_tile_config* out);
 
 /* `algo` with tile configuration `index`. Valid for the tiled family:
-   CCML_MATMUL_REGISTER_TILED (every configuration) and CCML_MATMUL_VECTORIZED
-   (configurations whose TM, TN and BK are multiples of 4; others return
-   CCML_ERROR_INVALID_ARGUMENT). Same contract as ccml_matmul_<dtype>. */
+   CCML_MATMUL_REGISTER_TILED (every configuration), CCML_MATMUL_VECTORIZED and
+   CCML_MATMUL_DOUBLE_BUFFERED (configurations whose TM, TN and BK are
+   multiples of 4; others return CCML_ERROR_INVALID_ARGUMENT). Same contract as ccml_matmul_<dtype>. */
 CCML_API ccml_status ccml_matmul_tuned_f32(float* C, const float* A, const float* B, int M,
                                            int N, int K, ccml_matmul_algo algo, int index,
                                            cudaStream_t stream);

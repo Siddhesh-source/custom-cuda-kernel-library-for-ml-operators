@@ -192,17 +192,18 @@ CCML_TEST(matmul, tiled_family_every_config_on_awkward_shapes) {
   const int configs = ccml_matmul_tile_config_count();
   ctx.check(configs >= 1, "at least one tile configuration");
 
-  for (ccml_matmul_algo algo : {CCML_MATMUL_REGISTER_TILED, CCML_MATMUL_VECTORIZED}) {
+  for (ccml_matmul_algo algo : {CCML_MATMUL_REGISTER_TILED, CCML_MATMUL_VECTORIZED,
+                                CCML_MATMUL_DOUBLE_BUFFERED}) {
   for (int index = 0; index < configs; ++index) {
     ccml_matmul_tile_config cfg;
     CCML_ASSERT_OK(ccml_matmul_tile_config_get(index, &cfg));
-    if (algo == CCML_MATMUL_VECTORIZED &&
+    if (algo != CCML_MATMUL_REGISTER_TILED &&
         (cfg.tm % 4 != 0 || cfg.tn % 4 != 0 || cfg.bk % 4 != 0)) {
       /* Unsupported pairing: must be rejected, never run with a wrong layout. */
       DeviceBuffer d(4);
       ctx.check(ccml_matmul_tuned_f32(d.data(), d.data(), d.data(), 2, 2, 1, algo, index,
                                       nullptr) == CCML_ERROR_INVALID_ARGUMENT,
-                "VECTORIZED rejects a configuration with TM or TN not a multiple of 4");
+                "vector variants reject a configuration with TM or TN not a multiple of 4");
       continue;
     }
     double worst_normalized = 0.0;
@@ -292,8 +293,10 @@ CCML_TEST(matmul, vectorized_handles_misaligned_pointers) {
   DeviceBuffer a(host_a.size()), b(host_b.size()), c(static_cast<std::size_t>(M) * N + 1);
   a.upload(host_a.data());
   b.upload(host_b.data());
+  for (ccml_matmul_algo algo : {CCML_MATMUL_VECTORIZED, CCML_MATMUL_DOUBLE_BUFFERED}) {
+  CCML_ASSERT_OK(ccml_device_memset_async(c.data(), 0xFF, c.bytes(), nullptr));
   CCML_ASSERT_OK(ccml_matmul_f32(c.data() + 1, a.data() + 1, b.data() + 1, M, N, K,
-                                 CCML_MATMUL_VECTORIZED, nullptr));
+                                 algo, nullptr));
   CCML_ASSERT_OK(ccml_device_synchronize());
   std::vector<float> got_all(c.count());
   c.download(got_all.data());
@@ -303,6 +306,23 @@ CCML_TEST(matmul, vectorized_handles_misaligned_pointers) {
   const ccml_test::ErrorStats stats = ccml_test::compare(got, expected, tol);
   ctx.note(stats.to_string());
   ctx.check(ccml_test::within(stats), "misaligned views must still be correct");
+  }
+}
+
+/* Double buffering's single barrier per step is only safe if the prefetch
+   buffers alternate correctly for any number of k-steps: one step (K <= BK),
+   two, an odd count, and a ragged last step. */
+CCML_TEST(matmul, double_buffered_every_k_step_count) {
+  for (int K : {1, 3, 8, 9, 16, 17, 24, 40, 63, 64, 65, 1000}) {
+    run_case(ctx, 67, 132, K, CCML_MATMUL_DOUBLE_BUFFERED, 960 + static_cast<std::uint64_t>(K));
+  }
+}
+
+CCML_TEST(matmul, double_buffered_through_the_algo_enum) {
+  run_case(ctx, 128, 768, 768, CCML_MATMUL_DOUBLE_BUFFERED, 970);
+  run_case(ctx, 131, 67, 97, CCML_MATMUL_DOUBLE_BUFFERED, 971);
+  run_case(ctx, 1, 2304, 768, CCML_MATMUL_DOUBLE_BUFFERED, 972);
+  run_case(ctx, 256, 96, 2048, CCML_MATMUL_DOUBLE_BUFFERED, 973);
 }
 
 CCML_TEST(matmul, vectorized_through_the_algo_enum) {

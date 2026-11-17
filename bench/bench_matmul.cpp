@@ -63,7 +63,7 @@ int main(int argc, char** argv) {
       if (options.wants("ccml")) {
         for (ccml_matmul_algo algo :
              {CCML_MATMUL_NAIVE, CCML_MATMUL_TILED, CCML_MATMUL_REGISTER_TILED,
-              CCML_MATMUL_VECTORIZED}) {
+              CCML_MATMUL_VECTORIZED, CCML_MATMUL_DOUBLE_BUFFERED}) {
           /* Over the cap the naive kernel is reported NOT_RUN, never timed. */
           const bool skip = algo == CCML_MATMUL_NAIVE && options.naive_max_gflop > 0.0 &&
                             gflop > options.naive_max_gflop;
@@ -81,7 +81,8 @@ int main(int argc, char** argv) {
          NOT_RUN. */
       if (options.wants("ccml_tiles") && options.tile_sweep) {
         const std::pair<ccml_matmul_algo, const char*> family[] = {
-            {CCML_MATMUL_REGISTER_TILED, "rt_"}, {CCML_MATMUL_VECTORIZED, "vec_"}};
+            {CCML_MATMUL_REGISTER_TILED, "rt_"}, {CCML_MATMUL_VECTORIZED, "vec_"},
+            {CCML_MATMUL_DOUBLE_BUFFERED, "db_"}};
         for (const auto& [variant, prefix] : family) {
           for (int index = 0; index < ccml_matmul_tile_config_count(); ++index) {
             ccml_matmul_tile_config t;

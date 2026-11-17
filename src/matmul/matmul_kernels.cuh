@@ -435,6 +435,190 @@ matmul_vectorized(T* C, const T* A, const T* B, int M, int N, int K) {
   }
 }
 
+/* Loads 4 consecutive elements of row `row` of a [rows, cols] matrix starting
+   at column `col` (a multiple of 4), widened to float and zero-filled outside
+   the matrix. kVec: one vector load; the host guarantees cols % 4 == 0 and
+   alignment, so col < cols implies col + 3 < cols. */
+template <typename T, bool kVec>
+__device__ __forceinline__ float4 load_quad(const T* M_, int rows, int cols, int row, int col) {
+  using ccml::detail::to_float;
+  float v[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+  if (row < rows) {
+    const T* p = M_ + static_cast<long long>(row) * cols + col;
+    if (kVec) {
+      if (col < cols) {
+        const Vec4<T> x = *reinterpret_cast<const Vec4<T>*>(p);
+#pragma unroll
+        for (int j = 0; j < 4; ++j) v[j] = to_float(x.v[j]);
+      }
+    } else {
+#pragma unroll
+      for (int j = 0; j < 4; ++j) {
+        if (col + j < cols) v[j] = to_float(p[j]);
+      }
+    }
+  }
+  return make_float4(v[0], v[1], v[2], v[3]);
+}
+
+/*
+ * Double-buffered (docs/optimization-log.md, entry 3): matmul_vectorized's
+ * tiling and conflict-free layout, plus a second shared-memory buffer.
+ *
+ *   prologue:  fetch tile 0 -> stash in buffer 0 -> barrier
+ *   step k:    issue global loads of tile k+1 into registers   (in flight...)
+ *              compute tile k from buffer k%2                  (...during this)
+ *              stash the registers into buffer (k+1)%2
+ *              barrier
+ *
+ * One barrier per step is enough. The stash at step k writes the buffer that
+ * step k-1 read, and every thread passed step k-1's barrier only after
+ * finishing that read. The barrier at the end of step k then publishes the
+ * stash before step k+1 reads it.
+ *
+ * This is the register-prefetch form, which runs on sm_75. The cp.async form
+ * (sm_80+) is docs/local.md item L2.
+ */
+template <typename T, int BM, int BN, int BK, int TM, int TN, bool kVec>
+__global__ void __launch_bounds__((BM / TM) * (BN / TN), 2)
+matmul_double_buffered(T* C, const T* A, const T* B, int M, int N, int K) {
+  constexpr int kCols = BN / TN;
+  constexpr int kThreads = (BM / TM) * kCols;
+  constexpr int kChunksN = TN / 4;
+  constexpr int kChunkStride = BN / kChunksN;
+  constexpr int kPadA = 4;
+  constexpr int kQuadsA = BM * BK / 4;
+  constexpr int kQuadsB = BK * BN / 4;
+  constexpr int kPerThreadA = (kQuadsA + kThreads - 1) / kThreads;
+  constexpr int kPerThreadB = (kQuadsB + kThreads - 1) / kThreads;
+  static_assert(TM % 4 == 0 && TN % 4 == 0 && BK % 4 == 0,
+                "double-buffered tiles need multiples of 4");
+
+  __shared__ __align__(16) float As[2][BK][BM + kPadA];
+  __shared__ __align__(16) float Bs[2][BK][BN];
+
+  const int tid = static_cast<int>(threadIdx.x);
+  const int thread_row = tid / kCols;
+  const int thread_col = tid % kCols;
+  const int block_row = static_cast<int>(blockIdx.y) * BM;
+  const int block_col = static_cast<int>(blockIdx.x) * BN;
+
+  float4 ra[kPerThreadA];
+  float4 rb[kPerThreadB];
+
+  /* Global -> registers for the slice starting at k0. */
+  auto fetch = [&](int k0) {
+#pragma unroll
+    for (int p = 0; p < kPerThreadA; ++p) {
+      const int q = tid + p * kThreads;
+      if (q < kQuadsA) {
+        ra[p] = load_quad<T, kVec>(A, M, K, block_row + q / (BK / 4), k0 + (q % (BK / 4)) * 4);
+      }
+    }
+#pragma unroll
+    for (int p = 0; p < kPerThreadB; ++p) {
+      const int q = tid + p * kThreads;
+      if (q < kQuadsB) {
+        rb[p] = load_quad<T, kVec>(B, K, N, k0 + q / (BN / 4), block_col + (q % (BN / 4)) * 4);
+      }
+    }
+  };
+  /* Registers -> shared buffer `buf`: A transposed and padded, B as float4. */
+  auto stash = [&](int buf) {
+#pragma unroll
+    for (int p = 0; p < kPerThreadA; ++p) {
+      const int q = tid + p * kThreads;
+      if (q < kQuadsA) {
+        const int r = q / (BK / 4);
+        const int c = (q % (BK / 4)) * 4;
+        As[buf][c + 0][r] = ra[p].x;
+        As[buf][c + 1][r] = ra[p].y;
+        As[buf][c + 2][r] = ra[p].z;
+        As[buf][c + 3][r] = ra[p].w;
+      }
+    }
+#pragma unroll
+    for (int p = 0; p < kPerThreadB; ++p) {
+      const int q = tid + p * kThreads;
+      if (q < kQuadsB) {
+        *reinterpret_cast<float4*>(&Bs[buf][q / (BN / 4)][(q % (BN / 4)) * 4]) = rb[p];
+      }
+    }
+  };
+
+  float acc[TM][TN];
+#pragma unroll
+  for (int i = 0; i < TM; ++i) {
+#pragma unroll
+    for (int j = 0; j < TN; ++j) acc[i][j] = 0.0f;
+  }
+  float a_reg[TM];
+  float b_reg[TN];
+
+  fetch(0);
+  stash(0);
+  __syncthreads();
+
+  int buf = 0;
+  for (int k0 = 0; k0 < K; k0 += BK) {
+    const bool has_next = k0 + BK < K;
+    if (has_next) fetch(k0 + BK);  /* in flight during the math below */
+
+#pragma unroll
+    for (int k = 0; k < BK; ++k) {
+#pragma unroll
+      for (int i4 = 0; i4 < TM / 4; ++i4) {
+        const float4 a4 =
+            *reinterpret_cast<const float4*>(&As[buf][k][thread_row * TM + i4 * 4]);
+        a_reg[i4 * 4 + 0] = a4.x;
+        a_reg[i4 * 4 + 1] = a4.y;
+        a_reg[i4 * 4 + 2] = a4.z;
+        a_reg[i4 * 4 + 3] = a4.w;
+      }
+#pragma unroll
+      for (int c4 = 0; c4 < kChunksN; ++c4) {
+        const float4 b4 = *reinterpret_cast<const float4*>(
+            &Bs[buf][k][c4 * kChunkStride + thread_col * 4]);
+        b_reg[c4 * 4 + 0] = b4.x;
+        b_reg[c4 * 4 + 1] = b4.y;
+        b_reg[c4 * 4 + 2] = b4.z;
+        b_reg[c4 * 4 + 3] = b4.w;
+      }
+#pragma unroll
+      for (int i = 0; i < TM; ++i) {
+#pragma unroll
+        for (int j = 0; j < TN; ++j) acc[i][j] += a_reg[i] * b_reg[j];
+      }
+    }
+
+    if (has_next) stash(buf ^ 1);
+    __syncthreads();
+    buf ^= 1;
+  }
+
+#pragma unroll
+  for (int i = 0; i < TM; ++i) {
+    const int r = block_row + thread_row * TM + i;
+    if (r >= M) continue;
+#pragma unroll
+    for (int c4 = 0; c4 < kChunksN; ++c4) {
+      const int col0 = block_col + c4 * kChunkStride + thread_col * 4;
+      T* out = C + static_cast<long long>(r) * N + col0;
+      if (kVec && col0 + 3 < N) {
+        Vec4<T> x;
+#pragma unroll
+        for (int j = 0; j < 4; ++j) x.v[j] = ccml::detail::from_float<T>(acc[i][c4 * 4 + j]);
+        *reinterpret_cast<Vec4<T>*>(out) = x;
+      } else {
+#pragma unroll
+        for (int j = 0; j < 4; ++j) {
+          if (col0 + j < N) out[j] = ccml::detail::from_float<T>(acc[i][c4 * 4 + j]);
+        }
+      }
+    }
+  }
+}
+
 }  // namespace kernels
 }  // namespace ccml
 
