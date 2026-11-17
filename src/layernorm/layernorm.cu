@@ -1,5 +1,6 @@
 #include "ccml/layernorm.h"
 
+#include <cstdint>
 #include <string>
 
 #include "common/check.h"
@@ -64,6 +65,41 @@ ccml_status launch_warp_per_row(T* y, const T* x, const T* gamma, const T* beta,
   return CCML_ERROR_UNSUPPORTED_SHAPE;
 }
 
+/* Vectorized (entry 11): kChunks 128-bit chunks per lane. */
+template <typename T, int kChunks>
+ccml_status launch_vec(T* y, const T* x, const T* gamma, const T* beta, int rows, int cols,
+                       float eps, cudaStream_t stream) {
+  constexpr int kRows = ccml::kernels::kRowsPerBlock;
+  ccml::detail::LaunchConfig config;
+  config.block = dim3(32 * kRows, 1, 1);
+  config.grid = dim3(static_cast<unsigned>((rows + kRows - 1) / kRows), 1, 1);
+  void (*const layernorm_vectorized)(T*, const T*, const T*, const T*, int, int, float) =
+      &ccml::kernels::layernorm_vectorized<T, kChunks>;
+  CCML_LAUNCH(layernorm_vectorized, config, stream, y, x, gamma, beta, rows, cols, eps);
+  return CCML_SUCCESS;
+}
+
+bool aligned16(const void* p) { return reinterpret_cast<std::uintptr_t>(p) % 16 == 0; }
+
+/* Needs cols % (16 / sizeof(T)) == 0 and 16-byte-aligned pointers (a null
+   gamma or beta is fine); otherwise WARP_PER_ROW's scalar kernel computes the
+   identical result. */
+template <typename T>
+ccml_status launch_vectorized(T* y, const T* x, const T* gamma, const T* beta, int rows,
+                              int cols, float eps, cudaStream_t stream, const std::string& fn) {
+  constexpr int kV = static_cast<int>(16 / sizeof(T));
+  const bool vec = cols % kV == 0 && aligned16(y) && aligned16(x) &&
+                   (gamma == nullptr || aligned16(gamma)) && (beta == nullptr || aligned16(beta));
+  if (!vec || cols > 1024) {
+    return launch_warp_per_row(y, x, gamma, beta, rows, cols, eps, stream, fn);
+  }
+  const int chunks = (cols / kV + 31) / 32;
+  if (chunks <= 1) return launch_vec<T, 1>(y, x, gamma, beta, rows, cols, eps, stream);
+  if (chunks <= 2) return launch_vec<T, 2>(y, x, gamma, beta, rows, cols, eps, stream);
+  if (chunks <= 4) return launch_vec<T, 4>(y, x, gamma, beta, rows, cols, eps, stream);
+  return launch_vec<T, 8>(y, x, gamma, beta, rows, cols, eps, stream);
+}
+
 /* One implementation for every storage type; the public entry points below are
    thin instantiations of it. */
 template <typename Public>
@@ -107,6 +143,9 @@ ccml_status layernorm(Public* y_pub, const Public* x_pub, const Public* gamma_pu
       return launch_warp_per_row(y, x, gamma, beta, rows, cols, eps, stream,
                                  fn_name<Public>());
 
+    case CCML_LAYERNORM_VECTORIZED:
+      return launch_vectorized(y, x, gamma, beta, rows, cols, eps, stream, fn_name<Public>());
+
     default:
       ccml::detail::set_last_error((fn_name<Public>() + ": unknown algorithm").c_str());
       return CCML_ERROR_INVALID_ARGUMENT;
@@ -123,6 +162,7 @@ const char* ccml_layernorm_algo_name(ccml_layernorm_algo algo) {
     case CCML_LAYERNORM_TWO_PASS: return "two_pass";
     case CCML_LAYERNORM_WELFORD:  return "welford";
     case CCML_LAYERNORM_WARP_PER_ROW: return "warp_per_row";
+    case CCML_LAYERNORM_VECTORIZED:   return "vectorized";
   }
   return "unknown";
 }

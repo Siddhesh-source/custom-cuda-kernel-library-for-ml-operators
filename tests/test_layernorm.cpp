@@ -348,7 +348,7 @@ CCML_TEST(layernorm, rejects_null_and_nonpositive_dimensions) {
    the numerics cases (mean far from zero) most of all, because the FP32
    variants rely on the pivot shift for them (optimization log entry 9). */
 const ccml_layernorm_algo kAlgos[] = {CCML_LAYERNORM_TWO_PASS, CCML_LAYERNORM_WELFORD,
-                                      CCML_LAYERNORM_WARP_PER_ROW};
+                                      CCML_LAYERNORM_WARP_PER_ROW, CCML_LAYERNORM_VECTORIZED};
 
 CCML_TEST(layernorm, every_algorithm_on_every_case) {
   struct Case {
@@ -366,7 +366,9 @@ CCML_TEST(layernorm, every_algorithm_on_every_case) {
     for (const Case& c : cases) {
       /* WARP_PER_ROW holds the row in one warp: cols <= 1024 only (the
          rejection of wider rows is its own test below). */
-      if (algo == CCML_LAYERNORM_WARP_PER_ROW && c.shape.cols > 1024) continue;
+      if ((algo == CCML_LAYERNORM_WARP_PER_ROW || algo == CCML_LAYERNORM_VECTORIZED) &&
+          c.shape.cols > 1024)
+        continue;
       CaseOptions o;
       o.input_mean = c.mean;
       o.input_stddev = c.stddev;
@@ -395,6 +397,46 @@ CCML_TEST(layernorm, warp_per_row_every_bucket) {
                                CCML_LAYERNORM_WARP_PER_ROW, nullptr) ==
                 CCML_ERROR_UNSUPPORTED_SHAPE,
             "cols = 1025 is refused with UNSUPPORTED_SHAPE, never truncated");
+}
+
+/* VECTORIZED on every chunk bucket, on widths that are and are not multiples
+   of 4 (the latter take the scalar fallback), and on misaligned views (a
+   pointer one element into its buffer is not 16-byte aligned). */
+CCML_TEST(layernorm, vectorized_vector_and_fallback_paths) {
+  double worst = 0.0;
+  for (int cols : {4, 8, 124, 128, 132, 252, 256, 260, 508, 512, 516, 764, 768, 772, 1020, 1024,
+                   5, 130, 767, 1023}) {
+    CaseOptions o;
+    o.algo = CCML_LAYERNORM_VECTORIZED;
+    o.input_mean = 77.0f;
+    worst = std::fmax(worst, run_case(ctx, Shape{37, cols}, o, 1100 + cols).max_normalized_error);
+  }
+  /* Misaligned: x, y, gamma, beta all one float into their buffers. */
+  const int rows = 9, cols = 768;
+  const std::size_t n = static_cast<std::size_t>(rows) * cols;
+  std::vector<float> hx(n + 1), hg(cols + 1), hb(cols + 1);
+  Rng(1200).normal(hx.data(), hx.size(), 3.0f, 2.0f);
+  Rng(1201).uniform(hg.data(), hg.size(), 0.5f, 1.5f);
+  Rng(1202).uniform(hb.data(), hb.size(), -1.0f, 1.0f);
+  const std::vector<float> xv(hx.begin() + 1, hx.end()), gv(hg.begin() + 1, hg.end()),
+      bv(hb.begin() + 1, hb.end());
+  std::vector<double> expected;
+  ctx.check(ccml_test::layernorm_reference(expected, xv, gv, bv, rows, cols, kEps), "reference");
+  DeviceBuffer dx(n + 1), dy(n + 1), dg(cols + 1), db(cols + 1);
+  dx.upload(hx.data());
+  dg.upload(hg.data());
+  db.upload(hb.data());
+  CCML_ASSERT_OK(ccml_device_memset_async(dy.data(), 0xFF, dy.bytes(), nullptr));
+  CCML_ASSERT_OK(ccml_layernorm_f32(dy.data() + 1, dx.data() + 1, dg.data() + 1, db.data() + 1,
+                                    rows, cols, kEps, CCML_LAYERNORM_VECTORIZED, nullptr));
+  CCML_ASSERT_OK(ccml_device_synchronize());
+  std::vector<float> all(n + 1);
+  dy.download(all.data());
+  const std::vector<float> got(all.begin() + 1, all.end());
+  const ErrorStats st =
+      ccml_test::compare(got, expected, ccml_test::tolerance_for_f32_reduction(cols));
+  ctx.check(ccml_test::within(st), "misaligned views: " + st.to_string());
+  ctx.note("worst normalized error " + std::to_string(std::fmax(worst, st.max_normalized_error)));
 }
 
 /* A pivot that is an outlier of its row (first element 1000 standard

@@ -1,0 +1,50 @@
+﻿ncu: C:\Program Files\NVIDIA Corporation\Nsight Compute 2026.1.1\ncu.bat
+bench: D:\ccml-layernorm\build\local\bin\ccml_bench_layernorm.exe
+2026-11-17T17:20:01.2258990+05:30
+
+#### h768.rows2048
+==PROF== Connected to process 8840 (D:\ccml-layernorm\build\local\bin\ccml_bench_layernorm.exe)
+# gpu: NVIDIA GeForce RTX 3050 A Laptop GPU (cc 8.9)  driver: 591.66  cuda runtime: 13.1  commit: unknown
+# peaks: fp32 11.128 TFLOPS theoretical, 0.000 measured; bandwidth 128.0 GB/s theoretical, 0.0 measured (0 = not measured)
+# tensor core peaks (16-bit in, fp32 accumulate): f16 22.257 TFLOPS theoretical, 0.000 measured; bf16 22.257 theoretical, 0.000 measured (0 = none on this GPU or not measured)
+# telemetry: NVML; other compute processes on GPU: 25
+op,impl,algo,dtype,tag,M,N,K,rows,cols,cache,iters,median_us,p10_us,p90_us,iqr_us,min_us,ci95_lo_us,ci95_hi_us,batched_mean_us,tflops,gbps,pct_peak_theory,pct_peak_measured,max_abs_err,max_rel_err,gate,sm_clock_mhz,mem_clock_mhz,temp_c,clock_reasons,throttled,gpu,cc,driver,cuda,commit
+==PROF== Profiling "layernorm_warp_per_row": 0%....50%....100% - 18 passes
+==PROF== Profiling "layernorm_vectorized": 0%....50%....100% - 18 passes
+layernorm,ccml,two_pass,f16,h768.rows2048,0,0,0,2048,768,warm,100,813.312,809.088,813.696,0.447989,808.736,813.248,813.408,745.628,,7.7394,6.046,,0.001953,0.1212,PASS,2205,8001,47,0x1,0,"NVIDIA GeForce RTX 3050 A Laptop GPU",8.9,591.66,13.1,unknown
+layernorm,ccml,welford,f16,h768.rows2048,0,0,0,2048,768,warm,100,90.08,89.92,90.368,0.192001,89.728,90.048,90.144,77.6624,,69.877,54.58,,0.001953,0.1212,PASS,2205,8001,47,0x1,0,"NVIDIA GeForce RTX 3050 A Laptop GPU",8.9,591.66,13.1,unknown
+layernorm,ccml,warp_per_row,f16,h768.rows2048,0,0,0,2048,768,warm,100,27.632,27.168,28.512,0.624001,27.008,27.52,27.776,60.8502,,227.8,177.9,,0.001953,0.1212,PASS,2205,8001,47,0x1,0,"NVIDIA GeForce RTX 3050 A Laptop GPU",8.9,591.66,13.1,unknown
+layernorm,ccml,vectorized,f16,h768.rows2048,0,0,0,2048,768,warm,100,14.752,14.624,15.008,0.2,14.528,14.72,14.8,72.8282,,426.69,333.3,,0.001953,0.1212,PASS,2205,8001,47,0x1,0,"NVIDIA GeForce RTX 3050 A Laptop GPU",8.9,591.66,13.1,unknown
+ncu.bat : done layernorm h768.rows2048
+At D:\ccml-layernorm\scripts\ncu_matmul.ps1:80 char:3
++   & $ncu @nargs 2>&1 | Out-File -Append -Encoding utf8 $log
++   ~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (done layernorm h768.rows2048:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+==PROF== Disconnected from process 8840
+==PROF== Report: D:\ccml-layernorm\profiles\sm_89\layernorm\warp_per_row_vs_vectorized_h768.rows2048.ncu-rep
+
+#### h768.rows8192
+==PROF== Connected to process 2004 (D:\ccml-layernorm\build\local\bin\ccml_bench_layernorm.exe)
+# gpu: NVIDIA GeForce RTX 3050 A Laptop GPU (cc 8.9)  driver: 591.66  cuda runtime: 13.1  commit: unknown
+# peaks: fp32 11.128 TFLOPS theoretical, 0.000 measured; bandwidth 128.0 GB/s theoretical, 0.0 measured (0 = not measured)
+# tensor core peaks (16-bit in, fp32 accumulate): f16 22.257 TFLOPS theoretical, 0.000 measured; bf16 22.257 theoretical, 0.000 measured (0 = none on this GPU or not measured)
+# telemetry: NVML; other compute processes on GPU: 25
+op,impl,algo,dtype,tag,M,N,K,rows,cols,cache,iters,median_us,p10_us,p90_us,iqr_us,min_us,ci95_lo_us,ci95_hi_us,batched_mean_us,tflops,gbps,pct_peak_theory,pct_peak_measured,max_abs_err,max_rel_err,gate,sm_clock_mhz,mem_clock_mhz,temp_c,clock_reasons,throttled,gpu,cc,driver,cuda,commit
+==PROF== Profiling "layernorm_warp_per_row": 0%....50%....100% - 18 passes
+==PROF== Profiling "layernorm_vectorized": 0%....50%....100% - 18 passes
+layernorm,ccml,two_pass,f16,h768.rows8192,0,0,0,8192,768,warm,100,2763.41,2762.82,3214.05,450.096,2762.5,2763.28,2764.22,2792.18,,9.1079,7.115,,0.001953,0.01745,PASS,2565,7001,50,0x0,0,"NVIDIA GeForce RTX 3050 A Laptop GPU",8.9,591.66,13.1,unknown
+layernorm,ccml,welford,f16,h768.rows8192,0,0,0,8192,768,warm,100,339.856,339.072,380.634,1.592,338.56,339.648,340.032,333.284,,74.058,57.85,,0.001954,0.08155,PASS,2565,7001,50,0x0,0,"NVIDIA GeForce RTX 3050 A Laptop GPU",8.9,591.66,13.1,unknown
+layernorm,ccml,warp_per_row,f16,h768.rows8192,0,0,0,8192,768,warm,100,248.848,245.84,251.939,2.95199,236.576,248.176,249.328,222.676,,101.14,79.01,,0.001953,0.08518,PASS,2565,7001,50,0x0,0,"NVIDIA GeForce RTX 3050 A Laptop GPU",8.9,591.66,13.1,unknown
+layernorm,ccml,vectorized,f16,h768.rows8192,0,0,0,8192,768,warm,100,240.016,237.206,243.507,3.232,213.44,239.488,240.224,214.869,,104.86,81.91,,0.001954,0.1259,PASS,2565,7001,50,0x0,0,"NVIDIA GeForce RTX 3050 A Laptop GPU",8.9,591.66,13.1,unknown
+ncu.bat : done layernorm h768.rows8192
+At D:\ccml-layernorm\scripts\ncu_matmul.ps1:80 char:3
++   & $ncu @nargs 2>&1 | Out-File -Append -Encoding utf8 $log
++   ~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (done layernorm h768.rows8192:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+==PROF== Disconnected from process 2004
+==PROF== Report: D:\ccml-layernorm\profiles\sm_89\layernorm\warp_per_row_vs_vectorized_h768.rows8192.ncu-rep
+done 2026-11-17T17:20:08.6094053+05:30

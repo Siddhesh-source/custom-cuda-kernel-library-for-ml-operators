@@ -15,7 +15,11 @@ typedef enum ccml_layernorm_algo {
   CCML_LAYERNORM_WELFORD  = 2, /* single-pass FP32 Welford on pivot-shifted data, block per row */
   /* One warp per row, the row held in registers (cols <= 1024; wider rows
      return CCML_ERROR_UNSUPPORTED_SHAPE). */
-  CCML_LAYERNORM_WARP_PER_ROW = 3
+  CCML_LAYERNORM_WARP_PER_ROW = 3,
+  /* WARP_PER_ROW with 128-bit loads and stores (cols a multiple of 4 for f32,
+     8 for f16/bf16, 16-byte-aligned pointers; otherwise WARP_PER_ROW's scalar
+     kernel runs). cols <= 1024. */
+  CCML_LAYERNORM_VECTORIZED = 4
 } ccml_layernorm_algo;
 
 CCML_API const char* ccml_layernorm_algo_name(ccml_layernorm_algo algo);

@@ -1385,7 +1385,8 @@ counts on WELFORD. The next limit, from NCU: 80 registers halve occupancy and
 
 ## 11. Layernorm: 128-bit loads and stores on warp-per-row (`CCML_LAYERNORM_VECTORIZED`)
 
-**Status:** hypothesis committed before the code.
+**Status:** implemented and correct (FP32, FP16, BF16; cols <= 1024).
+Local sm_89 evidence below; T4 result at the end of the entry when it lands.
 
 ### Hypothesis
 
@@ -1418,3 +1419,68 @@ fallback is safe).
 **What would falsify it:** load instructions falling as predicted with no
 time saved at the 16-bit large shapes, which would mean WARP_PER_ROW's 16-bit
 rows were not latency-bound but limited elsewhere (occupancy via registers).
+
+### Change
+
+- `Chunk16<T>` and `layernorm_vectorized<T, kChunks>` in
+  `src/layernorm/layernorm_kernels.cuh`; `launch_vectorized` checks
+  cols % (16 / sizeof(T)) and 16-byte alignment of every pointer, picks 1, 2,
+  4 or 8 chunks per lane, and otherwise runs WARP_PER_ROW's scalar kernel.
+- Tests: `layernorm.vectorized_vector_and_fallback_paths` (16 widths at the
+  edges of every chunk bucket, 4 non-multiple widths, misaligned x/y/gamma/beta
+  views); VECTORIZED joins every shared case and the FP16/BF16 tests. 17/17
+  layernorm cases pass; worst normalized error 0.151.
+
+### Evidence
+
+**Timings, local sm_89 (indicative), warm L2, median of 200**
+(`results/sm_89/layernorm_vectorized.csv`):
+
+| Shape | warp_per_row f16 | **vectorized f16** | GB/s | warp_per_row f32 | vectorized f32 |
+|---|---|---|---|---|---|
+| 8192 x 768 | 243 us | 232 (1.05x) | 108 | 440 | 438 (1.00x) |
+| 8192 x 1024 | 292 | 291 (1.00x) | 115 | 586 | 582 (1.01x) |
+| 4096 x 1000 | 61.4 | **28.7 (2.14x)** | 572 (L2) | 322 | 325 (0.99x) |
+| 2048 x 1024 | 33.8 | **15.4 (2.20x)** | 546 (L2) | 46.1 | **37.9 (1.22x)** |
+| 512 x 768 | 11.3 | **7.2 (1.57x)** | 220 | 11.3 | **9.2 (1.22x)** |
+| 128 x 1024 | 9.2 | **5.7 (1.61x)** | 92 | 9.2 | **6.1 (1.50x)** |
+| 16 x 1024 | 8.2 | **5.1 (1.60x)** | 14 | 8.2 | **5.1 (1.60x)** |
+
+At 1-16 rows VECTORIZED now equals WELFORD (5.1 us), removing entry 10's
+small-row loss.
+
+**Nsight Compute, local sm_89, FP16** (`profiles/sm_89/layernorm/warp_per_row_vs_vectorized_*`):
+
+| Metric (2048 x 768 / 8192 x 768) | warp_per_row | vectorized |
+|---|---|---|
+| Instructions executed | 1.95 M / 7.80 M | **1.02 M / 4.08 M (1.9x fewer)** |
+| Registers; warps active | 78; 47% | **55; 68%** |
+| Stall lg_throttle (LSU queue full) | 0.149 / 0.236 | **0.004 / 0.001** |
+| Stall long_scoreboard (per issue) | 6.33 / 7.11 | 22.9 / 27.4 |
+| DRAM throughput, % of peak | 69.1% / 88.5% | 89.2% / **93.1%** |
+| Duration under the profiler | 36.1 / 153 us | 40.9 / **132 us** |
+| DRAM bytes read / written | 3.18 / 0 MB; 12.6 / 4.7 MB | 3.17 / 1.49 MB; 12.6 / 3.1 MB |
+
+### Verdict
+
+**Kept**; it supersedes WARP_PER_ROW wherever its preconditions hold.
+
+1. Load instructions down 4x / 8x, long_scoreboard down by half: **loads
+   met in effect** (instructions 1.9x fewer in total, the LSU-queue stall
+   `lg_throttle` gone); **long_scoreboard falsified as stated**: per issue it
+   rose 3.6x. It is a ratio: the same memory wait divided over half as many
+   instructions. Per-issue stall ratios are the wrong yardstick when the
+   instruction count itself changes; time and DRAM throughput are the right
+   ones (DRAM 88.5% -> 93.1%, 153 -> 132 us).
+2. FP16 rows >= 2048: 1.2-1.6x: **exceeded where L2-resident** (2.1-2.2x at
+   2048-4096 rows), **not at 8192 rows**, where WARP_PER_ROW was already at the
+   DRAM peak warm (1.00-1.05x). Cold under the profiler, 1.16x.
+3. FP32 at the DRAM peak unchanged, mid sizes 1.1-1.3x: **met** (1.00x;
+   1.22x).
+4. Correctness including the fallback: **met.**
+
+The cold 2048 x 768 profile is slower (36.1 -> 40.9 us) because of an
+accounting artifact, not the kernel: WARP_PER_ROW's 1.5 MB output was still in
+L2 when its measurement ended (0 bytes written to DRAM), while VECTORIZED's
+write-back landed inside its own. The warm bench (2.2x) and the 8192-row cold
+profile (equal bytes, 1.16x) are the comparisons that hold.

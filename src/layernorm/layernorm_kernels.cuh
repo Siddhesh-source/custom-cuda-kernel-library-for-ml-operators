@@ -289,6 +289,82 @@ layernorm_warp_per_row(T* y, const T* x, const T* gamma, const T* beta, int rows
   }
 }
 
+/* ------------------------------------------------------- vectorized ---
+ *
+ * docs/optimization-log.md entry 11. WARP_PER_ROW with every global access
+ * 128 bits wide: chunks of kV = 16 / sizeof(T) elements; lane l owns chunks
+ * l, l + 32, ..., up to kChunks of them. The host runs it only when cols is a
+ * multiple of kV and x, y, gamma, beta are 16-byte aligned, so a chunk that
+ * starts inside the row lies entirely inside it.
+ */
+template <typename T>
+struct alignas(16) Chunk16 {
+  T v[16 / sizeof(T)];
+};
+
+template <typename T, int kChunks>
+__global__ void __launch_bounds__(32 * kRowsPerBlock)
+layernorm_vectorized(T* y, const T* x, const T* gamma, const T* beta, int rows, int cols,
+                     float eps) {
+  using ccml::detail::to_float;
+  constexpr int kV = static_cast<int>(16 / sizeof(T));
+  const int lane = static_cast<int>(threadIdx.x) % 32;
+  const int row = static_cast<int>(blockIdx.x) * kRowsPerBlock + static_cast<int>(threadIdx.x) / 32;
+  if (row >= rows) return;
+  const long long base = static_cast<long long>(row) * cols;
+  const T* __restrict__ row_in = x + base;
+  T* __restrict__ row_out = y + base;
+
+  const float pivot = to_float(row_in[0]);
+  float d[kChunks][kV];
+  float sum = 0.0f;
+#pragma unroll
+  for (int j = 0; j < kChunks; ++j) {
+    const int c0 = (lane + 32 * j) * kV;
+    if (c0 < cols) {
+      const Chunk16<T> in = *reinterpret_cast<const Chunk16<T>*>(row_in + c0);
+#pragma unroll
+      for (int e = 0; e < kV; ++e) {
+        d[j][e] = to_float(in.v[e]) - pivot;
+        sum += d[j][e];
+      }
+    } else {
+#pragma unroll
+      for (int e = 0; e < kV; ++e) d[j][e] = 0.0f;
+    }
+  }
+  const float mean = warp_sum(sum) / static_cast<float>(cols);
+  float sq = 0.0f;
+#pragma unroll
+  for (int j = 0; j < kChunks; ++j) {
+    if ((lane + 32 * j) * kV < cols) {
+#pragma unroll
+      for (int e = 0; e < kV; ++e) {
+        const float dev = d[j][e] - mean;
+        sq += dev * dev;
+      }
+    }
+  }
+  const float rstd = 1.0f / sqrtf(warp_sum(sq) / static_cast<float>(cols) + eps);
+#pragma unroll
+  for (int j = 0; j < kChunks; ++j) {
+    const int c0 = (lane + 32 * j) * kV;
+    if (c0 < cols) {
+      Chunk16<T> g, b, out;
+      if (gamma != nullptr) g = *reinterpret_cast<const Chunk16<T>*>(gamma + c0);
+      if (beta != nullptr) b = *reinterpret_cast<const Chunk16<T>*>(beta + c0);
+#pragma unroll
+      for (int e = 0; e < kV; ++e) {
+        float v = (d[j][e] - mean) * rstd;
+        if (gamma != nullptr) v *= to_float(g.v[e]);
+        if (beta != nullptr) v += to_float(b.v[e]);
+        out.v[e] = ccml::detail::from_float<T>(v);
+      }
+      *reinterpret_cast<Chunk16<T>*>(row_out + c0) = out;
+    }
+  }
+}
+
 }  // namespace kernels
 }  // namespace ccml
 
