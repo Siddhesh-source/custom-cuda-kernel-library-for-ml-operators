@@ -1484,3 +1484,47 @@ accounting artifact, not the kernel: WARP_PER_ROW's 1.5 MB output was still in
 L2 when its measurement ended (0 bytes written to DRAM), while VECTORIZED's
 write-back landed inside its own. The warm bench (2.2x) and the 8192-row cold
 profile (equal bytes, 1.16x) are the comparisons that hold.
+
+---
+
+## 12. Layernorm: fused residual + bias (enhancement F2; `ccml_layernorm_residual_<dtype>`)
+
+**Status:** hypothesis committed before the code.
+
+### Hypothesis
+
+In a pre-LN transformer block every layer norm is preceded by
+`s = x + residual + bias` (the attention or MLP output plus its bias, added to
+the residual stream), and `s` is needed twice: normalized now, and as the
+residual of the next block. Unfused, that is an elementwise kernel (read x, r,
+b; write s) followed by the layer norm (read s; write y): **5 row-sized
+transfers** (x, r, s, s, y). Fused, one kernel reads x and r once and writes s
+and y: **4**, with one launch instead of two. For a memory-bound operator the
+expected saving is about one fifth of the traffic plus a launch.
+
+**Change:** `ccml_layernorm_residual_f32/f16/bf16(y, sum_out, x, residual,
+bias, gamma, beta, rows, cols, eps, algo, stream)`: s = x + residual + bias
+(bias [cols] or NULL; sum_out NULL to skip writing s), rounded to the storage
+type, then y = LN(s). The norm is of the **rounded** s, so the fused result is
+bit-for-bit what the unfused pipeline's layer norm sees. `algo` VECTORIZED
+(the warp-per-row 128-bit kernel, cols <= 1024) or WELFORD (block per row, any
+width); AUTO picks by width.
+
+**Predictions** (warm and cold L2; T4 official, sm_89 indicative):
+
+1. Fused vs our own separate add kernel + VECTORIZED / WELFORD, on shapes
+   where both are DRAM-bound (rows >= 2048): **1.2-1.3x** (5 -> 4 transfers
+   plus a launch).
+2. Small shapes (rows <= 128): **1.3-1.8x**, the second launch being a large
+   share of 5-10 us.
+3. vs PyTorch eager (`F.layer_norm(x + r + b)`: two or three kernels): at least
+   the same margin as against our separate pipeline; vs torch.compile, which
+   fuses the add into its generated layer norm: **no better than VECTORIZED's
+   ratio to torch.compile on the plain layer norm.**
+4. `sum_out` is **bitwise equal** to the separate add kernel's output, and y
+   meets the layer norm tolerance against fp64 LN of the rounded sum.
+
+**What would falsify it:** fused no faster than separate at DRAM-bound sizes,
+which would mean the extra residual read and sum write per element push the
+fused kernel off the bandwidth limit (registers, occupancy) or the separate
+pipeline's s was served by L2 (only possible when s fits in L2).
