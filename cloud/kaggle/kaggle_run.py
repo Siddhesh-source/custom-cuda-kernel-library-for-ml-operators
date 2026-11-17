@@ -7,6 +7,8 @@ the exceptions).
 Jobs (scripts/kaggle_job.sh defines what each one does)
 -------------------------------------------------------
     sanitize                    ctest, Python helper tests, compute-sanitizer
+    model                       PyTorch extension build + pytest, GPT-2 parity and
+                                latency (the only job with internet access)
     matmul, layernorm, softmax  every implementation of one operator, C++ and
                                 Python, in one session on one GPU
     all                         everything in a single session
@@ -55,7 +57,11 @@ PUSH_ROOT = HERE / "_build"
 OUTPUT_ROOT = HERE / "_output"
 
 DEFAULT_JOBS = ["sanitize", "matmul", "layernorm", "softmax"]
-KNOWN_JOBS = set(DEFAULT_JOBS) | {"all", "build"}
+KNOWN_JOBS = set(DEFAULT_JOBS) | {"all", "build", "model"}
+# Jobs whose session gets internet access (user decision, 2026-11-17: the
+# model job downloads GPT-2 small and WikiText-2 from Hugging Face). Every
+# other job stays offline.
+INTERNET_JOBS = {"model"}
 # Excluded from the payload. profiles/ (Nsight reports, MBs) and results/ (CSVs)
 # are outputs, not inputs: a session never reads them, and packing them would
 # grow the payload past Kaggle's script limit.
@@ -192,7 +198,7 @@ def write_push_dir(username: str, job: str, use_gpu: bool, payload: str,
         # Always a T4 (sm_75): the project's benchmark target. Never a P100.
         **({"machine_shape": "NvidiaTeslaT4"} if use_gpu and pin_t4 else {}),
         # The image already has CUDA, CMake, Ninja, PyTorch, Triton and pynvml.
-        "enable_internet": False,
+        "enable_internet": job in INTERNET_JOBS,
         "dataset_sources": [],
         "competition_sources": [],
         "kernel_sources": [],

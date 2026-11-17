@@ -8,6 +8,8 @@
 #   sanitize                    ctest, Python helper tests, compute-sanitizer
 #   matmul | layernorm | softmax  every implementation of ONE operator, C++ and
 #                               Python, in this one session
+#   model                       PyTorch extension (build, pytest) and GPT-2
+#                               parity + latency; the only job with internet
 #   all                         everything, sequentially (one session)
 #
 # Splitting by operator, never by implementation, keeps every comparison in a
@@ -133,9 +135,28 @@ run_op() {
   fi
 }
 
+run_model() {
+  step "PyTorch extension: build (torch.utils.cpp_extension, CUDAExtension)"
+  CCML_BUILD_DIR="$BUILD" "$PY" -m pip install --no-build-isolation --no-deps \
+    "$SRC/python/ccml_ext" > "$OUT/logs/ext_build.log" 2>&1
+  echo "pip install exit $?"; tail -5 "$OUT/logs/ext_build.log"
+  step "PyTorch extension: pytest"
+  CCML_BUILD_DIR="$BUILD" "$PY" -m pytest "$SRC/python/ccml_ext/tests" -q -rs 2>&1 \
+    | tee "$RES/pytest_ext.txt" | tail -25
+  step "model dependencies"
+  "$PY" -c "import transformers, datasets" 2>/dev/null \
+    || "$PY" -m pip install -q transformers datasets > "$OUT/logs/model_deps.log" 2>&1
+  "$PY" -c "import transformers, datasets; print('transformers', transformers.__version__, 'datasets', datasets.__version__)"
+  step "GPT-2 small: parity and end-to-end latency"
+  CCML_BUILD_DIR="$BUILD" "$PY" "$SRC/scripts/model_bench.py" --out-dir "$RES" \
+    2> "$OUT/logs/model_bench.log"
+  echo "exit $?"; tail -40 "$OUT/logs/model_bench.log"
+}
+
 case "$JOB" in
   sanitize) run_sanitize ;;
   matmul|layernorm|softmax) run_op "$JOB" ;;
+  model) run_model ;;
   all) run_sanitize; for op in matmul layernorm softmax; do run_op "$op"; done ;;
   *) echo "unknown job: $JOB"; exit 2 ;;
 esac
