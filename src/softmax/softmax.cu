@@ -26,8 +26,15 @@ ccml_status validate(const Public* y, const Public* x, int rows, int cols) {
   return CCML_SUCCESS;
 }
 
-ccml_softmax_algo resolve(ccml_softmax_algo algo) {
-  return (algo == CCML_SOFTMAX_AUTO) ? CCML_SOFTMAX_BLOCK_PER_ROW : algo;
+/* AUTO (enhancement S4), from the Kaggle T4 run at commit 01c3555
+   (results/sm_75/softmax_variants/, docs/results/phase-13-softmax.md): the
+   best variant per column bucket was WARP_PER_ROW for every shape with
+   cols <= 1024 (17 of 17, all dtypes), and ONLINE or SPLIT_ROW above; SPLIT_ROW
+   runs ONLINE itself whenever the row count already fills the GPU, so it
+   covers both. */
+ccml_softmax_algo resolve(ccml_softmax_algo algo, int cols) {
+  if (algo != CCML_SOFTMAX_AUTO) return algo;
+  return cols <= 1024 ? CCML_SOFTMAX_WARP_PER_ROW : CCML_SOFTMAX_SPLIT_ROW;
 }
 
 /* Warp per row (entry 14). */
@@ -72,6 +79,59 @@ ccml_status launch_warp_per_row(T* y, const T* x, int rows, int cols, cudaStream
                    reinterpret_cast<std::uintptr_t>(y) % 16 == 0;
   return vec ? launch_wpr_chunks<T, kV>(y, x, rows, cols, stream)
              : launch_wpr_chunks<T, 1>(y, x, rows, cols, stream);
+}
+
+/* Block per row, register resident (entry 17). */
+template <typename T, int kV, int kChunks>
+ccml_status launch_br(T* y, const T* x, int rows, int cols, cudaStream_t stream) {
+  ccml::detail::LaunchConfig config;
+  config.block = dim3(ccml::kernels::kSoftmaxResidentThreads, 1, 1);
+  config.grid = dim3(static_cast<unsigned>(rows), 1, 1);
+  void (*const softmax_block_resident)(T*, const T*, int, int) =
+      &ccml::kernels::softmax_block_resident<T, kV, kChunks>;
+  CCML_LAUNCH(softmax_block_resident, config, stream, y, x, rows, cols);
+  return CCML_SUCCESS;
+}
+
+template <typename T, int kV>
+ccml_status launch_br_chunks(T* y, const T* x, int rows, int cols, cudaStream_t stream) {
+  constexpr int kT = ccml::kernels::kSoftmaxResidentThreads;
+  const int chunks = (cols / kV + kT - 1) / kT;
+  if (chunks <= 1) return launch_br<T, kV, 1>(y, x, rows, cols, stream);
+  if (chunks <= 2) return launch_br<T, kV, 2>(y, x, rows, cols, stream);
+  if (chunks <= 4) return launch_br<T, kV, 4>(y, x, rows, cols, stream);
+  return launch_br<T, kV, ccml::kernels::kSoftmaxResidentMaxChunks>(y, x, rows, cols, stream);
+}
+
+/* The widest row BLOCK_RESIDENT holds: 8192 FP32, 16384 FP16 / BF16 when the
+   row is 128-bit aligned; 2048 otherwise (one element per chunk). */
+template <typename T>
+constexpr int block_resident_max_cols(bool vec) {
+  return ccml::kernels::kSoftmaxResidentThreads * ccml::kernels::kSoftmaxResidentMaxChunks *
+         (vec ? static_cast<int>(16 / sizeof(T)) : 1);
+}
+
+template <typename T>
+bool softmax_vec_ok(const T* y, const T* x, int cols) {
+  constexpr int kV = static_cast<int>(16 / sizeof(T));
+  return cols % kV == 0 && reinterpret_cast<std::uintptr_t>(x) % 16 == 0 &&
+         reinterpret_cast<std::uintptr_t>(y) % 16 == 0;
+}
+
+template <typename T>
+ccml_status launch_block_resident(T* y, const T* x, int rows, int cols, cudaStream_t stream,
+                                  const std::string& fn) {
+  const bool vec = softmax_vec_ok(y, x, cols);
+  if (cols > block_resident_max_cols<T>(vec)) {
+    ccml::detail::set_last_error(
+        (fn + ": BLOCK_RESIDENT holds a row in one block's registers: cols <= " +
+         std::to_string(block_resident_max_cols<T>(vec)) + " for this dtype and alignment")
+            .c_str());
+    return CCML_ERROR_UNSUPPORTED_SHAPE;
+  }
+  constexpr int kV = static_cast<int>(16 / sizeof(T));
+  return vec ? launch_br_chunks<T, kV>(y, x, rows, cols, stream)
+             : launch_br_chunks<T, 1>(y, x, rows, cols, stream);
 }
 
 /* Split row (entry 15): S segments per row so that rows x S >= 2 x SMs, each
@@ -140,7 +200,7 @@ ccml_status softmax(Public* y_pub, const Public* x_pub, int rows, int cols,
   T* y = ccml::detail::device_ptr(y_pub);
   const T* x = ccml::detail::device_ptr(x_pub);
 
-  switch (resolve(algo)) {
+  switch (resolve(algo, cols)) {
     case CCML_SOFTMAX_BLOCK_PER_ROW: {
       /* One block per row. A row count above the device's grid limit is caught
          by validate_launch inside CCML_LAUNCH and reported as such, rather than
@@ -161,6 +221,9 @@ ccml_status softmax(Public* y_pub, const Public* x_pub, int rows, int cols,
 
     case CCML_SOFTMAX_WARP_PER_ROW:
       return launch_warp_per_row(y, x, rows, cols, stream, fn_name<Public>());
+
+    case CCML_SOFTMAX_BLOCK_RESIDENT:
+      return launch_block_resident(y, x, rows, cols, stream, fn_name<Public>());
 
     case CCML_SOFTMAX_SPLIT_ROW:
       return launch_split_row(y, x, rows, cols, stream);
@@ -257,6 +320,7 @@ const char* ccml_softmax_algo_name(ccml_softmax_algo algo) {
     case CCML_SOFTMAX_WARP_PER_ROW:  return "warp_per_row";
     case CCML_SOFTMAX_ONLINE:        return "online";
     case CCML_SOFTMAX_SPLIT_ROW:     return "split_row";
+    case CCML_SOFTMAX_BLOCK_RESIDENT: return "block_resident";
   }
   return "unknown";
 }

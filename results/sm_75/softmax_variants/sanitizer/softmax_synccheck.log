@@ -1,0 +1,38 @@
+========= COMPUTE-SANITIZER
+[PASS] softmax.small_rows
+       8 shapes; worst max_abs=2.832e-08 max_rel=2.053e-07 normalized=0.081
+       worst at: rows=8 cols=7
+[PASS] softmax.single_column_is_exactly_one
+[PASS] softmax.large_rows
+       5 shapes; worst max_abs=1.657e-09 max_rel=3.826e-07 normalized=0.013
+       worst at: rows=64 cols=1024
+[PASS] softmax.non_power_of_two_row_sizes
+       8 shapes; worst max_abs=4.441e-09 max_rel=3.129e-07 normalized=0.033
+       worst at: rows=11 cols=100
+[PASS] softmax.multiple_rows
+       6 shapes; worst max_abs=4.477e-09 max_rel=5.013e-07 normalized=0.023
+       worst at: rows=4099 cols=512
+[PASS] softmax.many_rows
+       n=5120000 max_abs=1.305e-08 max_rel=5.631e-07 normalized=0.037 worst_index=4989901 nonfinite=0
+[PASS] softmax.large_positive_inputs
+       mean=5000: n=4096 max_abs=3.178e-08 max_rel=1.549e-07 normalized=0.010 worst_index=2287 nonfinite=0
+[PASS] softmax.large_negative_inputs
+       mean=-5000: n=4096 max_abs=2.694e-08 max_rel=1.454e-07 normalized=0.010 worst_index=2729 nonfinite=0
+[PASS] softmax.extreme_dynamic_range
+       range +/-10000: n=4096 max_abs=2.731e-08 max_rel=1.000e+00 normalized=0.003 worst_index=3848 nonfinite=0
+[PASS] softmax.dominant_element_gives_one_hot
+[PASS] softmax.constant_row_is_uniform
+[PASS] softmax.rejects_null_and_nonpositive_dimensions
+[PASS] softmax.every_algorithm_on_every_case
+       block_per_row: worst normalized error 0.182477
+       online: worst normalized error 0.184241
+       warp_per_row: worst normalized error 0.186323
+       split_row: worst normalized error 0.184241
+[PASS] softmax.special_values_policy
+[PASS] softmax.warp_per_row_buckets_and_paths
+       worst normalized error 0.301079
+[PASS] softmax.split_row_long_rows_and_policy
+       worst normalized error 0.006683
+
+16 passed, 0 failed, 0 skipped
+========= ERROR SUMMARY: 0 errors

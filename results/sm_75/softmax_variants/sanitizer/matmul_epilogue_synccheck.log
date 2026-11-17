@@ -1,0 +1,14 @@
+========= COMPUTE-SANITIZER
+[PASS] matmul_epilogue.F16_every_combination
+       f16 mma_sync: worst normalized error 0.487913
+       f16 split_k: worst normalized error 0.487913
+[PASS] matmul_epilogue.F16_misaligned_views
+[SKIP] matmul_epilogue.BF16_every_combination
+       bf16 mma_sync 1x1x1 bias=1 residual=0 act=2 offset=0: ccml_matmul: mma_sync BF16 needs sm_80+; this binary runs sm_75 code on this device
+[SKIP] matmul_epilogue.BF16_misaligned_views
+       bf16 mma_sync 16x128x96 bias=1 residual=1 act=2 offset=1: ccml_matmul: mma_sync BF16 needs sm_80+; this binary runs sm_75 code on this device
+[PASS] matmul_epilogue.rejects_bad_arguments
+
+3 passed, 0 failed, 2 skipped
+NOTE: skipped tests are not evidence of correctness.
+========= ERROR SUMMARY: 0 errors

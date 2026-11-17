@@ -1606,7 +1606,7 @@ the minimum (x + r at 8192 x 768); the extra 9 MB is **not explained** yet.
 ## 13. Softmax: online softmax in FP32, block per row (`CCML_SOFTMAX_ONLINE`)
 
 **Status:** implemented and correct (FP32, FP16, BF16). Local sm_89 evidence
-below; Kaggle result at the end of the entry when it lands.
+below; official T4 result at the end of the entry.
 
 ### Hypothesis
 
@@ -1710,6 +1710,23 @@ Short rows remain slow (128-512 columns: 30-60 GB/s, FP32): 256-thread blocks
 on 128-column rows leave half the threads idle and pay two block barriers per
 row; entry 14 (warp per row) is aimed there.
 
+### Official T4 result (commit 01c3555, docs/results/phase-13-softmax.md)
+
+Kaggle Tesla T4, 227.7 GB/s measured DRAM peak; `results/sm_75/softmax_variants/`; ratios are medians over shapes, warm L2
+(`python scripts/rowwise_steps.py results/sm_75/softmax_variants/softmax.csv --pairs PREV:NEW`, with the row / column filter named).
+
+1. rows >= 1000, cols >= 1000, BLOCK_PER_ROW -> ONLINE: FP32 **1.75-2.93x
+   (median 2.03x) at 131-197 GB/s, 57-86% of measured peak: met**. FP16
+   2.17-3.52x and BF16 3.28-5.19x, but only **77-132 GB/s (34-58%)**: the 2-4x
+   is met, the bandwidth floor only just (FP16, BF16 low end under 50%).
+   Scalar 2-byte loads and the per-element online update are the limit; entry
+   17 addresses them.
+2. Correct on every case: **met** (all 795 rows of softmax.csv PASS or are a
+   variant's documented refusal; sanitizer clean).
+3. NCU: sm_89 only (above); not repeated on the T4.
+4. rows <= 16: **falsified in ratio** as on sm_89: FP32 1.48-2.08x, FP16
+   1.58-1.65x, BF16 2.56-2.66x, still only 1-38% of peak (entry 15's shapes).
+
 ---
 
 ## 14. Softmax: warp per row, row resident in registers, 128-bit access (`CCML_SOFTMAX_WARP_PER_ROW`)
@@ -1804,6 +1821,33 @@ passes.
    (NCU declined); open.
 4. Correct on every case, both paths: **met.**
 
+### Official T4 result (commit 01c3555, docs/results/phase-13-softmax.md)
+
+Kaggle Tesla T4, 227.7 GB/s measured DRAM peak; `results/sm_75/softmax_variants/`; ratios are medians over shapes, warm L2
+(`python scripts/rowwise_steps.py results/sm_75/softmax_variants/softmax.csv --pairs PREV:NEW`, with the row / column filter named).
+
+1. rows >= 1000, cols 128-512, ONLINE -> WARP_PER_ROW: **met**: FP32 1.58-5.69x
+   (median 2.67x), FP16 2.74-7.94x (3.82x), BF16 2.61-6.68x (3.29x). Where the
+   tensor exceeds the T4's 4 MB L2: **212-241 GB/s, 93-106% of measured peak**
+   (FP32 223-236, FP16 212-240, BF16 216-241). Over 100% means the measured
+   peak (a copy kernel) is itself below what a read-mostly kernel reaches.
+2. cols 1024: predicted 1.1-1.4x; **FP32 met (1.16-1.79x, median 1.33x),
+   16-bit exceeded (1.92-3.07x)**: ONLINE was not near the peak for 16-bit
+   rows on the T4 (scalar 2-byte loads), so the vector path gains more. All at
+   227-235 GB/s.
+3. NCU: still open (the elevated prompt was declined).
+4. Correct on every case, both paths: **met**.
+
+Against the baselines (best of cuDNN, eager, torch.compile max-autotune,
+Triton per shape; `scripts/rowwise_summary.py`, clock-checked), attention
+rows: **within a few percent, mostly behind**. 128 columns: loses 2-29% (FP16
+0.73-0.83x to cuDNN, e.g. 6.4 vs 5.3 us at 1536 x 128, a 393 KB tensor where
+launch and tail latency dominate). 256 columns: FP32 0.85-1.00x, FP16
+0.97-1.01x, BF16 wins 1.03-1.05x. 512 columns: FP16 wins 1.02-1.04x on GPT-2
+small and medium (57.3 vs 59.4 us cuDNN), loses 4% on Llama; FP32 and BF16
+lose 3-6% to Triton. At these sizes WARP_PER_ROW is at the DRAM peak where the
+tensor leaves L2, so there is little left to win.
+
 ---
 
 ## 15. Softmax: a long row split across blocks (`CCML_SOFTMAX_SPLIT_ROW`)
@@ -1880,6 +1924,30 @@ sizes (a 50257-element FP32 row is only 200 KB).
    picks 5, which is the configuration the prediction was about.
    128 rows: no change and no loss (S = 1 runs ONLINE): **met.**
 3. Correct, policy and determinism: **met.**
+
+### Official T4 result (commit 01c3555, docs/results/phase-13-softmax.md)
+
+Kaggle Tesla T4, 227.7 GB/s measured DRAM peak; `results/sm_75/softmax_variants/`; ratios are medians over shapes, warm L2
+(`python scripts/rowwise_steps.py results/sm_75/softmax_variants/softmax.csv --pairs PREV:NEW`, with the row / column filter named).
+
+1. rows = 1, cols 30522-50257, ONLINE -> SPLIT_ROW: **met for 16-bit**
+   (4.54-6.74x), **missed for FP32 on one of three shapes** (3.28-4.55x; the
+   prediction said >= 4x).
+2. rows = 16: **met for 16-bit (2.87-3.40x), FP32 at the line (1.99-2.09x)**.
+   rows = 128: **met** (1.00x: S = 1 there, so SPLIT_ROW runs ONLINE itself).
+3. Correct and bitwise deterministic: **met** (sanitizer clean, the
+   determinism test passes on the T4).
+
+Against the baselines (best per shape, clock-checked): **one row**: FP16 wins
+all three vocabularies 1.94-3.10x (Triton or torch.compile at a lower clock;
+the wins survive normalization), BF16 wins all three 1.05-1.53x, FP32 wins
+only 1 x 50257 (14.7 vs 18.2 us cuDNN, 1.23x) and loses 5-7% to cuDNN on the
+other two. **16 rows**: FP16 wins 16 x 50257 (1.72x), the other two FP16
+shapes are CLOCK (not claimed); BF16 loses 16-34%, FP32 loses 36-40% to cuDNN
+(22.5 vs 14.3 us). **128 rows: loses 22-41% in every dtype** (FP16 128 x 32000:
+175 vs 109 us Triton): ONLINE's long-row inefficiency again. Entry 17 targets
+it, but 30522+ columns exceed BLOCK_RESIDENT's register limit, so these shapes
+stay open.
 
 ---
 
@@ -1979,3 +2047,93 @@ rows in the CSV).
    is the fairer measure of fusion here; this row of the table overstates it.
 4. Correctness and policy: **met.**
 3. (vs PyTorch) and the NCU check are pending (Kaggle; elevated prompt).
+
+### Official T4 result (commit 01c3555, docs/results/phase-13-softmax.md)
+
+Kaggle Tesla T4, 227.7 GB/s measured DRAM peak; `results/sm_75/softmax_variants/`; ratios are medians over shapes, warm L2
+(`python scripts/rowwise_steps.py results/sm_75/softmax_variants/softmax.csv --pairs PREV:NEW`, with the row / column filter named).
+
+Fused vs our separate pipeline (scale-mask kernel + the same softmax
+variant), `results/sm_75/softmax_variants/softmax_masked.csv`:
+
+1. Beyond L2 (the T4's L2 is 4 MB): predicted 1.5-2x; **met at the low end,
+   exceeded at the median for 16-bit**: FP32 1.50-2.20x (median 1.99x), FP16
+   1.52-2.85x (2.41x), BF16 1.53-3.03x (2.59x). Above 2x means the separate
+   scale-mask kernel is itself slower than a copy (it is scalar), not that
+   fusion saves more than two transfers.
+2. Within L2: predicted 1.1-1.4x; **falsified**: 1.59-3.06x (medians
+   2.02-2.24x). Unlike sm_89's 32 MB, little fits the T4's L2, and the shapes
+   that do are small enough that the second launch and its tail dominate.
+3. vs torch.compile: predicted no better than WARP_PER_ROW's plain ratio to
+   it; **not yet judged**. The fused kernel beats compile on 93 of 96 warm
+   shapes (median 2.8-3.3x, all wins clock-checked) against a plain ratio of
+   1.0-2.0x, but for causal masks the compile baseline read a materialized
+   [rows, cols] mask that ccml never reads. A compile baseline that builds
+   the causal mask in-graph (commit 149216e) runs with entry 17's session;
+   the verdict waits for it. Padding masks (a broadcast [1, cols] row, no
+   asymmetry): compile/fused median 1.97x FP32, 2.04x FP16, 2.76x BF16.
+4. Fully masked rows are zeros: **met** (test on the T4, sanitizer clean).
+
+## 17. Softmax: register-resident block per row for long rows (`CCML_SOFTMAX_BLOCK_RESIDENT`)
+
+**Status:** implemented and correct (FP32, FP16, BF16; 17/17 softmax tests,
+11/11 suites on sm_89). Kaggle T4 result pending; Nsight Compute not run
+(needs the elevated prompt, as entries 14 and 16).
+
+### Hypothesis
+
+The Kaggle T4 run of entries 13-16 (commit 01c3555,
+results/sm_75/softmax_variants/softmax.csv) shows the long-row path is the
+weak one. For 1024 < cols <= 4097 with many rows, the best ccml variant is
+ONLINE (SPLIT_ROW runs ONLINE when rows fill the GPU) at 82-132 GB/s, 36-58%
+of the 227 GB/s measured peak, and it loses to Triton's looped online kernel
+by 1.3-2.5x (FP16 warm: gpt2s.attn.s2048 1573 vs 873 us, gpt2m.attn.s2048
+3154 vs 1246 us, odd.c3079.rows1000 94 vs 68 us). Short rows, where
+WARP_PER_ROW runs, reach 220-240 GB/s on the same GPU.
+
+`softmax_online` (entry 13) has the three costs entry 14 removed for short
+rows: (a) scalar 2- or 4-byte loads, so a warp moves 64 bytes per FP16 load
+instruction instead of 512; (b) an online update per element: an `expf`, a
+compare and a rescale of the running sum, on top of the second pass's
+`expf`; (c) a second read of the row from L2/DRAM in the write pass.
+
+**Change:** the spec's "block-per-row for long rows" built like entry 14: one
+256-thread block per row, the row read once into registers in 128-bit chunks
+(kV = 16 / sizeof(T), scalar when misaligned or cols % kV != 0), up to 8
+chunks per thread: cols <= 8192 FP32, 16384 FP16/BF16. Block max reduction,
+one `expf` per element kept in registers, block sum reduction, one write. NaN
+and -inf policy identical to WARP_PER_ROW. New enum value 5; AUTO picks it for
+1024 < cols <= its limit.
+
+**Predictions** (Kaggle T4, warm, against ONLINE on the same run):
+
+1. FP16/BF16 attention rows 2048 and odd 1025-4097, many rows: **1.5-2.5x**,
+   reaching **>= 180 GB/s** (80% of measured peak); at that bandwidth it beats
+   or ties Triton's looped kernel on those shapes.
+2. FP32 at the same shapes: **1.3-1.8x** (its loads were already 4 bytes, so
+   cost (a) is smaller).
+3. Rows of 1 or 16 x 30522+ (beyond the limit, or too few rows to fill the
+   GPU): no change; SPLIT_ROW stays the choice.
+4. Nsight Compute: dram__throughput near the WARP_PER_ROW figure; L2-to-SM
+   traffic per row halved (one read instead of two).
+
+### Change
+
+`softmax_block_resident<T, kV, kChunks>` (src/softmax/softmax_kernels.cuh),
+`launch_block_resident` (src/softmax/softmax.cu): 256 threads, chunk buckets
+1, 2, 4, 8 per thread, 128-bit path when cols % kV == 0 and both pointers are
+16-byte aligned. Two barriers per row (`__syncthreads_or` carries the NaN
+flag with the max). Rows past the limit return UNSUPPORTED_SHAPE. AUTO is
+unchanged until the T4 data picks the buckets. Tests:
+`softmax.block_resident_buckets_and_limits` (bucket edges, scalar and vector
+widths, a misaligned view, both refusals), plus the shared case and policy
+tests and the FP16/BF16 dtype suite.
+
+### Evidence
+
+Local sm_89 (RTX 3050 Laptop, 128 GB/s theoretical; indicative only), warm:
+every long-row variant sits at 80-114 GB/s on the attention s2048 shapes, FP32
+4772 vs ONLINE 4786 us (gpt2s), FP16 1769 vs 2019 us (gpt2s, 1.14x), 3365 vs
+3364 us (gpt2m). This GPU is DRAM-bound for every variant at about 65% of its
+theoretical bandwidth, so it cannot show the T4 gap (ONLINE at 128 GB/s
+against Triton's 230 GB/s on a 227 GB/s-measured T4). The T4 run decides.

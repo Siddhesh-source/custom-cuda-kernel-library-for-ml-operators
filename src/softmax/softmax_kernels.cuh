@@ -297,6 +297,90 @@ softmax_warp_per_row(T* y, const T* x, int rows, int cols) {
   }
 }
 
+/* ------------------------------------------- block per row, resident ---
+ *
+ * docs/optimization-log.md entry 17. Entry 14's design at block scope for long
+ * rows: one block of kSoftmaxResidentThreads per row, thread t owns chunks
+ * t, t + blockDim, ... of kV elements (128-bit when the host found the row
+ * aligned), read once into registers; block max, exp kept, block sum, one
+ * write. NaN / -inf policy identical to softmax_warp_per_row.
+ *
+ *   grid = (rows), block = (kSoftmaxResidentThreads)
+ */
+constexpr int kSoftmaxResidentThreads = 256;
+constexpr int kSoftmaxResidentMaxChunks = 8;
+
+template <typename T, int kV, int kChunks>
+__global__ void __launch_bounds__(kSoftmaxResidentThreads)
+softmax_block_resident(T* y, const T* x, int rows, int cols) {
+  using ccml::detail::to_float;
+  using Chunk = SoftmaxChunk<T, kV>;
+  constexpr int kWarps = kSoftmaxResidentThreads / 32;
+  const int row = static_cast<int>(blockIdx.x);
+  if (row >= rows) return;  /* uniform per block: no barrier is skipped by part of it */
+  const int tid = static_cast<int>(threadIdx.x);
+  const int lane = tid % 32;
+  const int warp = tid / 32;
+  const long long base = static_cast<long long>(row) * cols;
+  const T* __restrict__ row_in = x + base;
+  T* __restrict__ row_out = y + base;
+  /* Separate slots per reduction: the second write cannot race the first read. */
+  __shared__ float red_max[kWarps];
+  __shared__ float red_sum[kWarps];
+
+  float v[kChunks][kV];
+  float m = -INFINITY;
+  bool nan = false;
+#pragma unroll
+  for (int j = 0; j < kChunks; ++j) {
+    const int c0 = (tid + kSoftmaxResidentThreads * j) * kV;
+    if (c0 < cols) {
+      const Chunk in = *reinterpret_cast<const Chunk*>(row_in + c0);
+#pragma unroll
+      for (int e = 0; e < kV; ++e) {
+        v[j][e] = to_float(in.v[e]);
+        m = v[j][e] > m ? v[j][e] : m;
+        nan |= v[j][e] != v[j][e];
+      }
+    } else {
+#pragma unroll
+      for (int e = 0; e < kV; ++e) v[j][e] = -INFINITY;
+    }
+  }
+  m = warp_max(m);
+  if (lane == 0) red_max[warp] = m;
+  /* NaN anywhere poisons the row (the max reduction alone would drop it). */
+  const bool row_nan = __syncthreads_or(nan) != 0;
+  m = lane < kWarps ? red_max[lane] : -INFINITY;
+  m = warp_max(m);
+  if (row_nan) m = NAN;
+  float s = 0.0f;
+#pragma unroll
+  for (int j = 0; j < kChunks; ++j) {
+#pragma unroll
+    for (int e = 0; e < kV; ++e) {
+      /* Same policy as softmax_warp_per_row. */
+      v[j][e] = (v[j][e] == -INFINITY && m == m) ? 0.0f : expf(v[j][e] - m);
+      s += v[j][e];
+    }
+  }
+  s = warp_sum_f(s);
+  if (lane == 0) red_sum[warp] = s;
+  __syncthreads();
+  s = lane < kWarps ? red_sum[lane] : 0.0f;
+  const float inv = 1.0f / warp_sum_f(s);
+#pragma unroll
+  for (int j = 0; j < kChunks; ++j) {
+    const int c0 = (tid + kSoftmaxResidentThreads * j) * kV;
+    if (c0 < cols) {
+      Chunk out;
+#pragma unroll
+      for (int e = 0; e < kV; ++e) out.v[e] = ccml::detail::from_float<T>(v[j][e] * inv);
+      *reinterpret_cast<Chunk*>(row_out + c0) = out;
+    }
+  }
+}
+
 /* --------------------------------------------------------- split row ---
  *
  * docs/optimization-log.md entry 15. Row r is cut into gridDim.x segments of

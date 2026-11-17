@@ -317,10 +317,15 @@ CCML_TEST(softmax, rejects_null_and_nonpositive_dimensions) {
 /* ------------------------------------------- every algorithm, every case --- */
 
 const ccml_softmax_algo kAlgos[] = {CCML_SOFTMAX_BLOCK_PER_ROW, CCML_SOFTMAX_ONLINE,
-                                    CCML_SOFTMAX_WARP_PER_ROW, CCML_SOFTMAX_SPLIT_ROW};
+                                    CCML_SOFTMAX_WARP_PER_ROW, CCML_SOFTMAX_SPLIT_ROW,
+                                    CCML_SOFTMAX_BLOCK_RESIDENT};
 
+/* FP32 limits; BLOCK_RESIDENT's assumes a 16-byte aligned row start, true
+   for these cudaMalloc'd buffers whenever cols % 4 == 0. */
 bool supported(ccml_softmax_algo algo, int cols) {
-  return !(algo == CCML_SOFTMAX_WARP_PER_ROW && cols > 1024);
+  if (algo == CCML_SOFTMAX_WARP_PER_ROW) return cols <= 1024;
+  if (algo == CCML_SOFTMAX_BLOCK_RESIDENT) return cols <= (cols % 4 == 0 ? 8192 : 2048);
+  return true;
 }
 
 /* Every built algorithm on the shared cases, at the same (relative)
@@ -427,6 +432,45 @@ CCML_TEST(softmax, warp_per_row_buckets_and_paths) {
   ctx.check(ccml_softmax_f32(&dummy, &dummy, 1, 1025, CCML_SOFTMAX_WARP_PER_ROW, nullptr) ==
                 CCML_ERROR_UNSUPPORTED_SHAPE,
             "cols = 1025 refused with UNSUPPORTED_SHAPE, never truncated");
+}
+
+/* BLOCK_RESIDENT (entry 17) on every chunk bucket, vector and scalar widths
+   on both sides of each bucket edge, both size limits, a misaligned view, and
+   the refusal one past each limit. */
+CCML_TEST(softmax, block_resident_buckets_and_limits) {
+  double worst = 0.0;
+  for (int cols : {1, 5, 255, 256, 257, 1024, 1025, 1028, 2047, 2048, 2052, 4096, 4100, 8188,
+                   8192}) {
+    InputOptions o;
+    o.stddev = cols % 2 ? 4.0f : 1.0f;
+    worst = std::fmax(worst, run_case(ctx, Shape{cols > 4096 ? 9 : 37, cols}, o, 1700 + cols,
+                                      CCML_SOFTMAX_BLOCK_RESIDENT).max_normalized_error);
+  }
+  const int rows = 5, cols = 2000;
+  std::vector<float> hx(static_cast<std::size_t>(rows) * cols + 1);
+  Rng(1800).normal(hx.data(), hx.size(), 0.0f, 3.0f);
+  const std::vector<float> xv(hx.begin() + 1, hx.end());
+  std::vector<double> ref;
+  ccml_test::softmax_reference(ref, xv, rows, cols);
+  DeviceBuffer dx(hx.size()), dy(hx.size());
+  dx.upload(hx.data());
+  CCML_ASSERT_OK(ccml_device_memset_async(dy.data(), 0xFF, dy.bytes(), nullptr));
+  CCML_ASSERT_OK(ccml_softmax_f32(dy.data() + 1, dx.data() + 1, rows, cols,
+                                  CCML_SOFTMAX_BLOCK_RESIDENT, nullptr));
+  CCML_ASSERT_OK(ccml_device_synchronize());
+  std::vector<float> all(hx.size());
+  dy.download(all.data());
+  const std::vector<float> got(all.begin() + 1, all.end());
+  const ErrorStats st = ccml_test::compare(got, ref, ccml_test::tolerance_for_softmax_f32(cols));
+  ctx.check(ccml_test::within(st), "misaligned view (scalar path): " + st.to_string());
+  ctx.note("worst normalized error " + std::to_string(std::fmax(worst, st.max_normalized_error)));
+  DeviceBuffer big(8196);
+  ctx.check(ccml_softmax_f32(big.data(), big.data(), 1, 8196, CCML_SOFTMAX_BLOCK_RESIDENT,
+                             nullptr) == CCML_ERROR_UNSUPPORTED_SHAPE,
+            "aligned cols = 8196 refused with UNSUPPORTED_SHAPE, never truncated");
+  ctx.check(ccml_softmax_f32(big.data(), big.data(), 1, 2049, CCML_SOFTMAX_BLOCK_RESIDENT,
+                             nullptr) == CCML_ERROR_UNSUPPORTED_SHAPE,
+            "unaligned cols = 2049 refused with UNSUPPORTED_SHAPE");
 }
 
 /* SPLIT_ROW on rows long enough to be split, with segment boundaries in
