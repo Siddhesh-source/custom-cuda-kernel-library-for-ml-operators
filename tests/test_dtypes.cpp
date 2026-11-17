@@ -260,6 +260,7 @@ std::vector<float> run_softmax(const ccml_test::Context& ctx, const std::vector<
 template <typename D>
 void check_softmax(const ccml_test::Context& ctx, int rows, int cols, float scale,
                    ccml_softmax_algo algo = CCML_SOFTMAX_AUTO) {
+  if (algo == CCML_SOFTMAX_WARP_PER_ROW && cols > 1024) return; /* refused by design */
   std::vector<float> x_raw(static_cast<std::size_t>(rows) * cols), x_exact;
   ccml_support::Rng rng(static_cast<std::uint64_t>(rows) * 3 + cols);
   rng.normal(x_raw.data(), x_raw.size(), 0.0f, scale);
@@ -278,7 +279,8 @@ void check_softmax(const ccml_test::Context& ctx, int rows, int cols, float scal
 
 const int kMatmulShapes[][3] = {{1, 1, 1}, {17, 33, 65}, {128, 128, 128},
                                 {64, 257, 1023}, {3, 768, 768}, {256, 96, 2048}};
-const ccml_softmax_algo kSoftmaxAlgos[] = {CCML_SOFTMAX_BLOCK_PER_ROW, CCML_SOFTMAX_ONLINE};
+const ccml_softmax_algo kSoftmaxAlgos[] = {CCML_SOFTMAX_BLOCK_PER_ROW, CCML_SOFTMAX_ONLINE,
+                                          CCML_SOFTMAX_WARP_PER_ROW};
 const ccml_layernorm_algo kLayerNormAlgos[] = {CCML_LAYERNORM_TWO_PASS,
                                                 CCML_LAYERNORM_WELFORD,
                                                 CCML_LAYERNORM_WARP_PER_ROW,

@@ -12,7 +12,8 @@ extern "C" {
 typedef enum ccml_softmax_algo {
   CCML_SOFTMAX_AUTO           = 0, /* library picks; currently BLOCK_PER_ROW */
   CCML_SOFTMAX_BLOCK_PER_ROW  = 1, /* one thread block reduces one row */
-  CCML_SOFTMAX_WARP_PER_ROW   = 2, /* one warp per row, for narrow rows (reserved) */
+  CCML_SOFTMAX_WARP_PER_ROW   = 2, /* one warp per row, row in registers, 128-bit when
+                                     aligned; cols <= 1024 (else UNSUPPORTED_SHAPE) */
   CCML_SOFTMAX_ONLINE         = 3  /* online (running max, sum) in FP32, block per row, 2 reads */
 } ccml_softmax_algo;
 

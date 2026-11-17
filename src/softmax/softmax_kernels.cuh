@@ -205,6 +205,98 @@ __global__ void softmax_online(T* y, const T* x, int rows, int cols) {
   }
 }
 
+/* ------------------------------------------------------- warp per row ---
+ *
+ * docs/optimization-log.md entry 14. One warp per row (cols <= 1024), 4 rows
+ * per block, no barriers. The row is read once into registers in chunks of kV
+ * elements: kV = 16 / sizeof(T) (one 128-bit access) when the host found cols a
+ * chunk multiple and the pointers aligned, else kV = 1. Lane l owns chunks
+ * l, l + 32, ...; exp(x - max) is computed once and kept.
+ *
+ *   grid = (ceil(rows / kSoftmaxRowsPerBlock)), block = (32 * kSoftmaxRowsPerBlock)
+ */
+constexpr int kSoftmaxRowsPerBlock = 4;
+
+template <typename T, int kV>
+struct alignas(sizeof(T) * kV) SoftmaxChunk {
+  T v[kV];
+};
+
+__device__ __forceinline__ float warp_max(float v) {
+#pragma unroll
+  for (int o = 16; o > 0; o >>= 1) {
+    const float other = __shfl_xor_sync(0xffffffffu, v, o);
+    v = other > v ? other : v;
+  }
+  return v;
+}
+
+__device__ __forceinline__ float warp_sum_f(float v) {
+#pragma unroll
+  for (int o = 16; o > 0; o >>= 1) v += __shfl_xor_sync(0xffffffffu, v, o);
+  return v;
+}
+
+template <typename T, int kV, int kChunks>
+__global__ void __launch_bounds__(32 * kSoftmaxRowsPerBlock)
+softmax_warp_per_row(T* y, const T* x, int rows, int cols) {
+  using ccml::detail::to_float;
+  using Chunk = SoftmaxChunk<T, kV>;
+  const int lane = static_cast<int>(threadIdx.x) % 32;
+  const int row = static_cast<int>(blockIdx.x) * kSoftmaxRowsPerBlock +
+                  static_cast<int>(threadIdx.x) / 32;
+  if (row >= rows) return;
+  const long long base = static_cast<long long>(row) * cols;
+  const T* __restrict__ row_in = x + base;
+  T* __restrict__ row_out = y + base;
+
+  float v[kChunks][kV];
+  float m = -INFINITY;
+  bool nan = false;
+#pragma unroll
+  for (int j = 0; j < kChunks; ++j) {
+    const int c0 = (lane + 32 * j) * kV;
+    if (c0 < cols) {
+      const Chunk in = *reinterpret_cast<const Chunk*>(row_in + c0);
+#pragma unroll
+      for (int e = 0; e < kV; ++e) {
+        v[j][e] = to_float(in.v[e]);
+        m = v[j][e] > m ? v[j][e] : m;
+        nan |= v[j][e] != v[j][e];
+      }
+    } else {
+#pragma unroll
+      for (int e = 0; e < kV; ++e) v[j][e] = -INFINITY;
+    }
+  }
+  m = warp_max(m);
+  /* NaN anywhere poisons the row (the max reduction alone would drop it). */
+  if (__any_sync(0xffffffffu, nan)) m = NAN;
+  float s = 0.0f;
+#pragma unroll
+  for (int j = 0; j < kChunks; ++j) {
+#pragma unroll
+    for (int e = 0; e < kV; ++e) {
+      /* -inf terms (including the padding) contribute exactly 0, unless the
+         row holds a NaN (m is then NaN and every term NaN); a row that is
+         entirely -inf keeps m = -inf and ends 0 / 0 = NaN, the policy. */
+      v[j][e] = (v[j][e] == -INFINITY && m == m) ? 0.0f : expf(v[j][e] - m);
+      s += v[j][e];
+    }
+  }
+  const float inv = 1.0f / warp_sum_f(s);
+#pragma unroll
+  for (int j = 0; j < kChunks; ++j) {
+    const int c0 = (lane + 32 * j) * kV;
+    if (c0 < cols) {
+      Chunk out;
+#pragma unroll
+      for (int e = 0; e < kV; ++e) out.v[e] = ccml::detail::from_float<T>(v[j][e] * inv);
+      *reinterpret_cast<Chunk*>(row_out + c0) = out;
+    }
+  }
+}
+
 }  // namespace kernels
 }  // namespace ccml
 

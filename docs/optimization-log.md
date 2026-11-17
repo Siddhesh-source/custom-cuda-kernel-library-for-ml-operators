@@ -1714,7 +1714,9 @@ row; entry 14 (warp per row) is aimed there.
 
 ## 14. Softmax: warp per row, row resident in registers, 128-bit access (`CCML_SOFTMAX_WARP_PER_ROW`)
 
-**Status:** hypothesis committed before the code.
+**Status:** implemented and correct (FP32, FP16, BF16; cols <= 1024). Local
+sm_89 timings below; **Nsight Compute not yet run** (the elevated prompt was
+declined), so prediction 3 is open.
 
 ### Hypothesis
 
@@ -1753,3 +1755,51 @@ measured experiment, not test a new hypothesis.
 **What would falsify it:** no gain at 128-512 columns, which would mean
 ONLINE's short rows were limited by something other than idle threads,
 barriers and the second pass (e.g. the grid being too small).
+
+### Change
+
+- `warp_max`, `warp_sum_f`, `SoftmaxChunk<T, kV>` and
+  `softmax_warp_per_row<T, kV, kChunks>` in `src/softmax/softmax_kernels.cuh`;
+  `launch_warp_per_row` picks the 128-bit chunk (kV = 16 / sizeof(T)) when cols
+  is a multiple of it and x, y are 16-byte aligned, else kV = 1; chunks per
+  lane from {1, 2, 4, 8, 16, 32}; cols > 1024 returns UNSUPPORTED_SHAPE.
+- NaN policy: a warp vote (`__any_sync`) makes m NaN if any element is NaN, so
+  a row holding both NaN and -inf is NaN everywhere (`special_values_policy`
+  now includes that row, for every algorithm).
+- Tests: `softmax.warp_per_row_buckets_and_paths` (18 widths over every
+  bucket, vector and scalar paths, a misaligned view, the 1025 refusal);
+  WARP_PER_ROW joins every shared case and the FP16/BF16 tests.
+
+### Evidence
+
+**Correctness (sm_89):** worst normalized error 0.186 on the shared cases,
+0.301 on the bucket sweep (odd widths at scale 4); special-values policy
+passes.
+
+**Timings, local sm_89 (indicative), warm L2, median of 200**
+(`results/sm_89/softmax_warp_per_row.csv`):
+
+| Shape (rows x cols) | online f32 | **warp_per_row f32** | GB/s | online f16 | warp_per_row f16 |
+|---|---|---|---|---|---|
+| 8192 x 256 | 286 us | **34.8 (8.2x)** | 482 (L2) | 243 | **20.5 (11.9x)** |
+| 4096 x 128 | 74.8 | **9.2 (8.1x)** | 455 (L2) | 64.4 | **12.3 (5.2x)** |
+| 1000 x 1000 | 51.2 | **16.4 (3.1x)** | 488 (L2) | 47.1 | **12.3 (3.8x)** |
+| 49152 x 512 | 2,056 | **1,739 (1.18x)** | 116 | 1,704 | **879 (1.94x)** |
+| 16384 x 512 | 714 | 661 (1.08x) | 102 | 567 | **292 (1.94x)** |
+| 32768 x 1024 | 2,262 | 2,331 (0.97x) | 115 | 1,511 | **1,161 (1.30x)** |
+| 12288 x 1024 | 957 | 981 (0.98x) | 103 | 570 | **437 (1.30x)** |
+
+### Verdict
+
+**Kept** (sm_89 timings; Kaggle and NCU pending).
+
+1. rows >= 1000, cols 128-512: 1.5-3x, >= 80% of DRAM where beyond L2:
+   **exceeded where L2-resident** (5-12x: ONLINE was far from any limit on
+   short rows), **at the DRAM peak where beyond L2** (FP32 1.08-1.18x and
+   102-116 GB/s, i.e. ~100% of the 114 GB/s measured; FP16 1.94x).
+2. cols 1024: 1.1-1.4x: **FP16 met (1.30x); FP32 not (0.97-0.98x)**: ONLINE
+   was already at the DRAM peak for wide FP32 rows, so there was nothing left
+   to take.
+3. Instructions at least 2x fewer, no barrier stalls: **not measured yet**
+   (NCU declined); open.
+4. Correct on every case, both paths: **met.**

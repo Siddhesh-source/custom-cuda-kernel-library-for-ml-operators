@@ -315,7 +315,12 @@ CCML_TEST(softmax, rejects_null_and_nonpositive_dimensions) {
 
 /* ------------------------------------------- every algorithm, every case --- */
 
-const ccml_softmax_algo kAlgos[] = {CCML_SOFTMAX_BLOCK_PER_ROW, CCML_SOFTMAX_ONLINE};
+const ccml_softmax_algo kAlgos[] = {CCML_SOFTMAX_BLOCK_PER_ROW, CCML_SOFTMAX_ONLINE,
+                                    CCML_SOFTMAX_WARP_PER_ROW};
+
+bool supported(ccml_softmax_algo algo, int cols) {
+  return !(algo == CCML_SOFTMAX_WARP_PER_ROW && cols > 1024);
+}
 
 /* Every built algorithm on the shared cases, at the same (relative)
    tolerance, plus the property checks (outputs in [0, 1], rows sum to 1). */
@@ -332,6 +337,7 @@ CCML_TEST(softmax, every_algorithm_on_every_case) {
   for (ccml_softmax_algo algo : kAlgos) {
     double worst = 0.0;
     for (const Case& c : cases) {
+      if (!supported(algo, c.shape.cols)) continue;
       InputOptions o;
       o.mean = c.mean;
       o.stddev = c.stddev;
@@ -367,6 +373,7 @@ CCML_TEST(softmax, special_values_policy) {
     for (int c = 0; c < cols; ++c) hx[static_cast<std::size_t>(cols + c)] = c < 290 ? -inf : 1.0f; /* row 1 */
     for (int c = 0; c < cols; ++c) hx[static_cast<std::size_t>(2 * cols + c)] = -inf; /* row 2 */
     hx[static_cast<std::size_t>(3 * cols + 17)] = std::numeric_limits<float>::quiet_NaN(); /* row 3 */
+    hx[static_cast<std::size_t>(3 * cols + 40)] = -inf; /* NaN poisons -inf entries too */
     for (int c = 0; c < cols; ++c) hx[static_cast<std::size_t>(4 * cols + c)] = -500.0f;
     hx[static_cast<std::size_t>(4 * cols + 123)] = 500.0f;                            /* row 4 */
     const std::vector<float> got = run_softmax(ctx, hx, Shape{5, cols}, algo);
@@ -386,11 +393,37 @@ CCML_TEST(softmax, special_values_policy) {
   }
 }
 
-CCML_TEST(softmax, warp_per_row_is_reserved_not_silently_substituted) {
+/* WARP_PER_ROW on every chunk bucket, vector widths (multiples of 4) and
+   scalar ones, a misaligned view, and the refusal past 1024 columns. */
+CCML_TEST(softmax, warp_per_row_buckets_and_paths) {
+  double worst = 0.0;
+  for (int cols : {1, 3, 4, 31, 32, 33, 64, 127, 128, 129, 256, 257, 512, 513, 768, 1000, 1023,
+                   1024}) {
+    InputOptions o;
+    o.stddev = cols % 2 ? 4.0f : 1.0f;
+    worst = std::fmax(worst, run_case(ctx, Shape{37, cols}, o, 1300 + cols,
+                                      CCML_SOFTMAX_WARP_PER_ROW).max_normalized_error);
+  }
+  const int rows = 9, cols = 256;
+  std::vector<float> hx(static_cast<std::size_t>(rows) * cols + 1);
+  Rng(1400).normal(hx.data(), hx.size(), 0.0f, 3.0f);
+  const std::vector<float> xv(hx.begin() + 1, hx.end());
+  std::vector<double> ref;
+  ccml_test::softmax_reference(ref, xv, rows, cols);
+  DeviceBuffer dx(hx.size()), dy(hx.size());
+  dx.upload(hx.data());
+  CCML_ASSERT_OK(ccml_device_memset_async(dy.data(), 0xFF, dy.bytes(), nullptr));
+  CCML_ASSERT_OK(ccml_softmax_f32(dy.data() + 1, dx.data() + 1, rows, cols,
+                                  CCML_SOFTMAX_WARP_PER_ROW, nullptr));
+  CCML_ASSERT_OK(ccml_device_synchronize());
+  std::vector<float> all(hx.size());
+  dy.download(all.data());
+  const std::vector<float> got(all.begin() + 1, all.end());
+  const ErrorStats st = ccml_test::compare(got, ref, ccml_test::tolerance_for_softmax_f32(cols));
+  ctx.check(ccml_test::within(st), "misaligned view: " + st.to_string());
+  ctx.note("worst normalized error " + std::to_string(std::fmax(worst, st.max_normalized_error)));
   float dummy = 0.0f;
-  const ccml_status status = ccml_softmax_f32(&dummy, &dummy, 1, 1,
-                                              CCML_SOFTMAX_WARP_PER_ROW, nullptr);
-  ctx.check(status == CCML_ERROR_NOT_IMPLEMENTED,
-            "an unbuilt algorithm must report NOT_IMPLEMENTED, not fall back "
-            "to a different one");
+  ctx.check(ccml_softmax_f32(&dummy, &dummy, 1, 1025, CCML_SOFTMAX_WARP_PER_ROW, nullptr) ==
+                CCML_ERROR_UNSUPPORTED_SHAPE,
+            "cols = 1025 refused with UNSUPPORTED_SHAPE, never truncated");
 }

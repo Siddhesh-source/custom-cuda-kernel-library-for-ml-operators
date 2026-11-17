@@ -1,5 +1,6 @@
 #include "ccml/softmax.h"
 
+#include <cstdint>
 #include <string>
 
 #include "common/check.h"
@@ -27,6 +28,46 @@ ccml_status validate(const Public* y, const Public* x, int rows, int cols) {
 
 ccml_softmax_algo resolve(ccml_softmax_algo algo) {
   return (algo == CCML_SOFTMAX_AUTO) ? CCML_SOFTMAX_BLOCK_PER_ROW : algo;
+}
+
+/* Warp per row (entry 14). */
+template <typename T, int kV, int kChunks>
+ccml_status launch_wpr(T* y, const T* x, int rows, int cols, cudaStream_t stream) {
+  constexpr int kRows = ccml::kernels::kSoftmaxRowsPerBlock;
+  ccml::detail::LaunchConfig config;
+  config.block = dim3(32 * kRows, 1, 1);
+  config.grid = dim3(static_cast<unsigned>((rows + kRows - 1) / kRows), 1, 1);
+  /* Through a pointer: the template argument list's commas would split the macro. */
+  void (*const softmax_warp_per_row)(T*, const T*, int, int) =
+      &ccml::kernels::softmax_warp_per_row<T, kV, kChunks>;
+  CCML_LAUNCH(softmax_warp_per_row, config, stream, y, x, rows, cols);
+  return CCML_SUCCESS;
+}
+
+template <typename T, int kV>
+ccml_status launch_wpr_chunks(T* y, const T* x, int rows, int cols, cudaStream_t stream) {
+  const int chunks = (cols / kV + 31) / 32;
+  if (chunks <= 1) return launch_wpr<T, kV, 1>(y, x, rows, cols, stream);
+  if (chunks <= 2) return launch_wpr<T, kV, 2>(y, x, rows, cols, stream);
+  if (chunks <= 4) return launch_wpr<T, kV, 4>(y, x, rows, cols, stream);
+  if (chunks <= 8) return launch_wpr<T, kV, 8>(y, x, rows, cols, stream);
+  if (chunks <= 16) return launch_wpr<T, kV, 16>(y, x, rows, cols, stream);
+  return launch_wpr<T, kV, 32>(y, x, rows, cols, stream);
+}
+
+template <typename T>
+ccml_status launch_warp_per_row(T* y, const T* x, int rows, int cols, cudaStream_t stream,
+                                const std::string& fn) {
+  if (cols > 1024) {
+    ccml::detail::set_last_error(
+        (fn + ": WARP_PER_ROW holds a row in one warp's registers, so cols <= 1024").c_str());
+    return CCML_ERROR_UNSUPPORTED_SHAPE;
+  }
+  constexpr int kV = static_cast<int>(16 / sizeof(T));
+  const bool vec = cols % kV == 0 && reinterpret_cast<std::uintptr_t>(x) % 16 == 0 &&
+                   reinterpret_cast<std::uintptr_t>(y) % 16 == 0;
+  return vec ? launch_wpr_chunks<T, kV>(y, x, rows, cols, stream)
+             : launch_wpr_chunks<T, 1>(y, x, rows, cols, stream);
 }
 
 /* One implementation for every storage type; the public entry points below are
@@ -65,10 +106,7 @@ ccml_status softmax(Public* y_pub, const Public* x_pub, int rows, int cols,
     }
 
     case CCML_SOFTMAX_WARP_PER_ROW:
-      ccml::detail::set_last_error(
-          (fn_name<Public>() + ": the warp-per-row algorithm is reserved but not built")
-              .c_str());
-      return CCML_ERROR_NOT_IMPLEMENTED;
+      return launch_warp_per_row(y, x, rows, cols, stream, fn_name<Public>());
 
     default:
       ccml::detail::set_last_error((fn_name<Public>() + ": unknown algorithm").c_str());
