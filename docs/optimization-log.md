@@ -1600,3 +1600,46 @@ kernel beats the fused VECTORIZED one (789 vs 900 us at 8192 x 768: 93% of
 warps active against 60%), so the fused op should not simply follow the
 plain op's choice; (b) the fused VECTORIZED kernel reads 59 MB where 50 MB is
 the minimum (x + r at 8192 x 768); the extra 9 MB is **not explained** yet.
+
+---
+
+## 13. Softmax: online softmax in FP32, block per row (`CCML_SOFTMAX_ONLINE`)
+
+**Status:** hypothesis committed before the code.
+
+### Hypothesis
+
+`BLOCK_PER_ROW` (Phase 3) reads each row **three times** (max, sum of
+exponentials, write) and reduces in **FP64**: the max reduction and the sum
+are doubles, the normalization is a double multiply, and every block reduction
+shuffles doubles. On the T4 it reaches only **30-100 GB/s** (Phase 7,
+`results/sm_75/softmax.csv`), while cuDNN reaches 150-240 GB/s on the same rows.
+Layer norm's entry 9 measured what that pattern costs: the FP64 pipe 87% busy,
+DRAM 13%.
+
+**Change:** `CCML_SOFTMAX_ONLINE` (Milakov & Gimelshein, 2018), block per row:
+- one pass for the statistics: each thread keeps a running maximum m and a
+  running sum s of exp(x - m), rescaling s by exp(m_old - m_new) when the
+  maximum grows; threads merge (m, s) pairs through warp shuffles and one
+  shared-memory step;
+- a second pass writes exp(x - m) / s;
+- FP32 throughout. Unlike layer norm, softmax needs no pivot trick: every term
+  is in (0, 1] after the max shift, and a sum of positive terms has no
+  cancellation, so FP32 error grows only as eps x sqrt(terms), inside the
+  existing relative tolerance (8 eps sqrt(cols)).
+
+**Predictions** (FP32, warm L2; T4 official, sm_89 NCU):
+
+1. Rows >= 1000 with cols >= 1000: **2-4x faster than BLOCK_PER_ROW**
+   (one fewer pass, no FP64), reaching at least 50% of measured DRAM bandwidth.
+2. Correct at the existing tolerance on every existing case: rows summing to
+   1, inputs at +-10000, the extreme dynamic range case, one-hot and constant
+   rows, 1 to 16384 columns.
+3. Nsight Compute: BLOCK_PER_ROW shows the FP64 pipe busy; ONLINE has no FP64
+   instructions and DRAM becomes the top limiter.
+4. Few, long rows (vocab rows, rows <= 16) **barely improve**: one block per
+   row leaves most SMs idle whatever the arithmetic; entry 15 (a row split
+   across blocks) is aimed there.
+
+**What would falsify it:** a speedup under 1.5x on the large shapes (FP64 and
+the third pass were not the limit), or any existing case failing in FP32.
