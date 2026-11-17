@@ -262,3 +262,56 @@ interleaved run, and why the official numbers come from the T4.
 double buffering (entry 3): overlap the next tile's global loads with the
 current tile's math, since `long_scoreboard` (waiting on global memory) is now
 the largest remaining stall (1.50 per issue).
+
+---
+
+## 3. Matmul: double buffering (`CCML_MATMUL_DOUBLE_BUFFERED`)
+
+**Status:** hypothesis committed; implementation in progress.
+
+### Hypothesis
+
+After entry 2, the largest remaining stall of VECTORIZED is
+**`long_scoreboard`: waiting for global memory** (1.50 per issue on the
+2048x4096x1024 profile). The cause is structural. Each k-step runs
+
+    load tile k from global -> store to shared -> barrier -> compute tile k -> barrier
+
+so while a block waits for its loads, it computes nothing. With only 2
+resident blocks per SM (the register budget), there is too little other work
+to hide that wait.
+
+**Change (register prefetch, works on sm_75):** two shared-memory buffers.
+While computing tile k from buffer `k % 2`, each thread has already *issued*
+the global loads for tile k+1 into registers. Those loads are in flight during
+the math. After the math, it stores them into buffer `(k + 1) % 2`. One barrier
+per k-step instead of two.
+
+(The `cp.async` form, a direct global-to-shared copy without registers, needs
+sm_80+ and is item L2 in docs/local.md.)
+
+**Predictions** (FP32, warm L2; T4 official, sm_89 indicative):
+
+1. `long_scoreboard` stalls per issue **fall by at least a third**, and barrier
+   stalls fall (one barrier per step instead of two).
+2. Large shapes get **1.05-1.20x faster than VECTORIZED**. The gain is capped
+   because the prefetch registers (2 float4 per thread in the default config)
+   push against the 128-register occupancy floor.
+3. Decode shapes (M <= 16) do not change measurably.
+
+**What would falsify it:** no stall reduction, which would mean the loads are
+not overlapping (the compiler sank them below the math), or register spills
+(`LOCAL > 0` in `cuobjdump --dump-resource-usage`) erasing the gain. Either
+result is recorded as is.
+
+### Change
+
+*(pending)*
+
+### Evidence
+
+*(pending)*
+
+### Verdict
+
+*(pending)*
