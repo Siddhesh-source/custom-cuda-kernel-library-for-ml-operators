@@ -547,6 +547,19 @@ m16n8k8 with `ldmatrix` fragment loads from an XOR-swizzled shared layout
 (removes both conflict kinds), and a deeper register-prefetch pipeline to
 attack long_scoreboard.
 
+### Official T4 result (commit 5edb43d, docs/results/phase-11-tensor-cores.md)
+
+Kaggle Tesla T4, FP16, warm L2, median per shape class
+(`python scripts/step_summary.py results/sm_75/tensor_cores/matmul.csv --pairs double_buffered:wmma`):
+WMMA is **2.83x faster than DOUBLE_BUFFERED on large shapes, 3.04x mid, 3.66x
+decode**, and runs at **0.40x of cuBLAS** (large-shape median). Prediction 1
+(at least 3x, 40-70% of cuBLAS): **met at the bottom edge**: 2.83x on large
+shapes, 0.40x of cuBLAS. The T4 runs Tensor Core kernels at its 70 W power cap
+(SM clocks 375-1440 MHz, NVML reason 0x4, no thermal throttling), so every
+Tensor Core row, ours and cuBLAS's, is far below the 65 TFLOPS theoretical
+peak; the WMMA microbenchmark measured 48.4 TFLOPS. Prediction 2 (no decode
+gain): **falsified on the T4 too** (3.66x at decode sizes).
+
 ---
 
 ## 5. Matmul: `mma.sync` m16n8k8 + `ldmatrix` on a swizzled layout (`CCML_MATMUL_MMA_SYNC`)
@@ -706,6 +719,17 @@ test, and it is not claimed until then.
    blocks for 14 SMs on sm_89 and 40 SMs on the T4, so the T4 will be
    under-filled.
 
+### Official T4 result (commit 5edb43d, docs/results/phase-11-tensor-cores.md)
+
+T4, FP16, warm: MMA_SYNC is **1.53x faster than WMMA on large shapes, 2.01x
+mid, 2.47x decode**; it reaches **0.58x of cuBLAS** on large shapes (median),
+0.77x mid, 0.97x decode. Prediction 2 (1.15-1.5x over WMMA, at least 0.7x of
+cuBLAS): **speedup met (above the range), cuBLAS fraction missed** (0.58x).
+One shape went the wrong way: llama1b ffn_up 2048x8192x2048, 8,948 us against
+WMMA's 6,328 us. Its operands (72 MB) are far beyond the T4's 4 MB L2 and
+MMA_SYNC's 64x64 tile gives 4x the CTAs of WMMA's 128x128, so raster order
+re-reads B more: the problem entry 7 (swizzle) fixes (5,847 us).
+
 ---
 
 ## 6. Matmul: split-K for decode shapes (enhancement S2; `CCML_MATMUL_SPLIT_K`, `CCML_MATMUL_SPLIT_K_ATOMIC`)
@@ -844,6 +868,22 @@ faster). T4 pending.
 L2 bandwidth (its 8 MB of weights fit the 32 MB L2), not DRAM. The T4's 4 MB
 L2 will not hold it; the cold-cache rows of the T4 run decide.
 
+### Official T4 result (commit 5edb43d, docs/results/phase-11-tensor-cores.md)
+
+T4, FP16, warm: SPLIT_K vs MMA_SYNC, median **1.18x at decode sizes**, 1.00x
+mid, 0.95x large; **vs the best cuBLAS kernel, 1.10x at decode (median)**.
+gpt2s ffn_down 1x768x3072: 59.4 -> 26.0 us (2.28x). Prediction 1 (1.3-2.5x
+where the grid is under 40 SMs): **met on the smallest grids** (ffn_down,
+attn_out), **missed on the 18-24 CTA shapes**: gpt2s qkv 16x2304x768 went
+15.5 -> 18.1 us, the heuristic's S = 5 (18 tiles x 5 = 90 CTAs) costs more than it gains there.
+Prediction 2 (beat cuBLAS on a decode target shape): **met** on 19 target
+decode shapes counting all ccml variants (phase-11 doc). Prediction 3:
+**falsified for M >= 128**: the heuristic still splits some 128-row grids,
+e.g. gpt2s qkv 128x2304x768 26.0 -> 40.2 us, and large shapes lose 5% at the
+median; AUTO must not route M > 16 to SPLIT_K. Prediction 4: atomic within
++-2% of deterministic on the T4 (0.98-1.00x median), so "at most 10% faster"
+holds only as "not faster".
+
 ---
 
 ## 7. Matmul: threadblock swizzle (enhancement S1; `CCML_MATMUL_MMA_SYNC_SWIZZLED`)
@@ -944,6 +984,20 @@ per shape is enhancement S4's measured table).
    (0.99-1.04x, DRAM bytes equal within 9%), **wrong as stated**: I assumed
    every target shape fits 32 MB, and llama1b's FFN at M = 2048 (72 MB) does
    not.
+
+### Official T4 result (commit 5edb43d, docs/results/phase-11-tensor-cores.md)
+
+T4, FP16, warm: swizzled vs MMA_SYNC median **1.00x large, 1.01x mid, 1.01x
+decode**; **llama1b ffn_up 2048x8192x2048: 8,948 -> 5,847 us (1.53x)**, the
+only target shape whose operands (72 MB) dwarf L2 *and* whose grid spans many
+waves. Prediction 1 (DRAM -20% and 3-10% on the M = 2048 shapes larger than
+4 MB): **met only on that shape; elsewhere no change**: gpt2m ffn_up
+2048x4096x1024 1.02x (1,401 -> 1,376 us). Power-capped clocks differ by up to
+2x between rows of the same large shape (450-1035 MHz), so the large-shape
+medians are coarse. Prediction 2 (one-wave grids unchanged): **met**
+(1.01x). The sm_89 cold-L2 loss on gpt2s qkv 128x2304x768 (0.87x) did not
+reproduce on the T4: cold, 32.7 vs 32.3 us (0.99x, within noise of cuBLAS's
+32.3 us); it is not explained, only not seen on the target GPU.
 
 ---
 
@@ -1074,3 +1128,22 @@ the fused MMA_SYNC kernel against the plain one it replaces):
 The fused kernel itself is 4-9% slower than the plain one (the epilogue's
 loads stall the store path), so fusion wins by removing a whole kernel, not by
 being free.
+
+### Official T4 result (commit 5edb43d, docs/results/phase-11-tensor-cores.md)
+
+T4, FP16, warm (`python scripts/epilogue_summary.py results/sm_75/tensor_cores/matmul_epilogue.csv`),
+median ratio of the competitor's time to ccml fused:
+
+| Class | ours + separate | cuBLAS + separate | cuBLASLt epilogue |
+|---|---|---|---|
+| large (M >= 512) | 1.13x (n = 24) | **0.77x** (n = 19) | **0.53x** (n = 19) |
+| mid (M = 128) | 1.09x | 1.05x | 0.88x |
+| decode (M <= 16) | 1.03x | **1.23x** | **1.20x** |
+
+1. Fused vs ours unfused: **met for large shapes** (1.13x median; up to 1.32x
+   on ffn_up 512x3072x768), **missed at decode** (1.03x, as on sm_89).
+2. Fused ccml vs cuBLAS + separate: **met where the plain kernel is close to
+   cuBLAS** (decode, 1.23x), **lost on large shapes** (0.77x), where the
+   plain MMA_SYNC is only 0.58x of cuBLAS and fusion cannot make that up.
+3. vs cuBLASLt's epilogue: **met**: ccml wins only at decode (1.20x) and
+   loses large (0.53x).
