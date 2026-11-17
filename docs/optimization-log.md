@@ -1880,3 +1880,49 @@ sizes (a 50257-element FP32 row is only 200 KB).
    picks 5, which is the configuration the prediction was about.
    128 rows: no change and no loss (S = 1 runs ONLINE): **met.**
 3. Correct, policy and determinism: **met.**
+
+---
+
+## 16. Softmax: fused scale and mask (enhancement F3; `ccml_softmax_masked_<dtype>`)
+
+**Status:** hypothesis committed before the code.
+
+### Hypothesis
+
+Attention computes softmax(S x scale + M) over every row of the score matrix,
+with M a padding mask (additive, -inf on padded keys) and/or a causal mask.
+Unfused, scale-and-mask is its own elementwise kernel: read S (and M), write
+the masked scores, then the softmax reads them again: **4 row-sized
+transfers** (S, S', S', y) plus M, against **2** (S, y) plus M fused, and one
+launch instead of two. For a memory-bound operator that is up to 2x.
+
+**Change:** `ccml_softmax_masked_f32/f16/bf16(y, x, mask, mask_rows, rows,
+cols, scale, causal_q, algo, stream)`:
+- v = x x scale + mask[row % mask_rows][col] (mask NULL: no additive mask);
+- causal_q > 0: row r is query q = r % causal_q of a block of causal_q
+  queries, and key c is masked when c > q + (cols - causal_q) (the usual
+  bottom-right-aligned causal mask; causal_q = cols for self-attention);
+- algo WARP_PER_ROW (cols <= 1024, entry 14's kernel with the load fused) or
+  ONLINE (block per row, any width); AUTO picks by width.
+
+**Policy for a fully masked row: all zeros**, not NaN. A padded query row has
+no valid key; zeros keep it from propagating NaN into the next matmul (the
+FlashAttention convention). This differs on purpose from the plain softmax,
+which returns NaN for an all -inf input as `torch.softmax` does; a NaN in x
+still poisons its row in both.
+
+**Predictions** (FP32 and FP16; Kaggle official, sm_89 indicative):
+
+1. Fused vs our separate scale-mask kernel + WARP_PER_ROW, attention shapes
+   beyond L2: **1.5-2x** (4 -> 2 transfers plus a launch).
+2. Where the scores fit L2 (sm_89's 32 MB holds most of them), the separate
+   pipeline's intermediate never reaches DRAM: **1.1-1.4x** (launch and L2
+   traffic only).
+3. vs PyTorch eager (`torch.softmax(x * scale + mask)`: two or three kernels):
+   at least the same margin; vs torch.compile, which fuses this pattern:
+   **no better than WARP_PER_ROW's plain ratio to it.**
+4. Correct: random masks, causal at several (rows, causal_q, cols), mask_rows
+   broadcasting, scale, fully masked rows exactly 0, NaN rows NaN.
+
+**What would falsify it:** no gain beyond L2, which would mean the fused
+kernel's mask read and index arithmetic cost what the saved transfers buy.
