@@ -1885,7 +1885,9 @@ sizes (a 50257-element FP32 row is only 200 KB).
 
 ## 16. Softmax: fused scale and mask (enhancement F3; `ccml_softmax_masked_<dtype>`)
 
-**Status:** hypothesis committed before the code.
+**Status:** implemented and correct (FP32, FP16, BF16). Local sm_89 timings
+below; Nsight Compute not run (pending the elevated prompt); Kaggle result
+at the end of the entry when it lands.
 
 ### Hypothesis
 
@@ -1926,3 +1928,54 @@ still poisons its row in both.
 
 **What would falsify it:** no gain beyond L2, which would mean the fused
 kernel's mask read and index arithmetic cost what the saved transfers buy.
+
+### Change
+
+- `SoftmaxMask`, `masked_value`, `causal_limit_of`,
+  `softmax_masked_warp_per_row<T, kV, kChunks>` and `softmax_masked_online<T>`
+  in `src/softmax/softmax_kernels.cuh`; `ccml_softmax_masked_f32/f16/bf16` in
+  `include/ccml/softmax.h` (AUTO: WARP_PER_ROW for cols <= 1024, else ONLINE).
+- **Fully masked row policy: zeros** (documented in the header); NaN in x
+  still poisons the row, even a fully masked one.
+- Tests: new suite `softmax_masked` (10 configurations: causal with
+  causal_q = cols, < cols, > cols (fully masked rows), padding masks broadcast
+  and per row-group with fully masked groups, mask + causal, 1 to 3000
+  columns; x every algo x 3 dtypes; NaN in a masked row; argument checks).
+  Worst normalized error 0.084 (FP32), 0.50 (FP16/BF16, the final rounding).
+- Bench: `ccml_bench_softmax_masked` (attention shapes x {causal, padding};
+  fused vs `scale_mask` kernel + the plain softmax); `bench_torch.py --ops
+  softmax_masked` (eager `torch.softmax(x * s + mask)`, torch.compile).
+  Unfused candidates are gated with a per-element allowance for rounding the
+  logits to the storage type, relative unit x (|v_i| + max |v|), as for the
+  unfused matmul epilogue (docs/correctness.md).
+
+### Evidence
+
+**Timings, local sm_89 (indicative), median of 200**
+(`results/sm_89/softmax_masked.csv`; ratio = best separate / best fused):
+
+| Shape (causal) | FP32 warm | FP32 cold | FP16 warm | FP16 cold |
+|---|---|---|---|---|
+| llama1b 65536 x 2048 | 25,640 -> 12,725 us (2.0x) | - | 12,852 -> 6,792 (1.9x) | - |
+| llama1b 32768 x 1024 | 6,216 -> 3,060 (2.0x) | - | 2,315 -> 1,161 (2.0x) | - |
+| gpt2s b8 49152 x 512 | 4,638 -> 2,319 (2.0x) | - | 2,295 -> 1,175 (2.0x) | - |
+| llama1b 8192 x 256 | 268 -> 48.1 (5.6x) | 297 -> 202 (1.5x) | 75.8 -> 26.6 (2.8x) | 163 -> 100 (1.6x) |
+| gpt2s 6144 x 512 | 488 -> 276 (1.8x) | 497 -> 298 (1.7x) | 172 -> 31.7 (5.4x) | 187 -> 120 (1.6x) |
+| gpt2s 1536 x 128 | 17.4 -> 7.2 (2.4x) | 24.6 -> 17.4 (1.4x) | 14.3 -> 8.2 (1.7x) | 20.5 -> 10.2 (2.0x) |
+
+Padding masks give the same ratios within 0.4x (all 64 shape x mask x dtype
+rows in the CSV).
+
+### Verdict
+
+**Kept.**
+
+1. Beyond L2: 1.5-2x: **met** (1.9-2.0x on every DRAM-bound shape: 4 -> 2
+   row transfers, as predicted).
+2. L2-resident: 1.1-1.4x: **falsified upward** (1.7-5.6x warm). The reason
+   is the baseline, not the fused kernel: the separate `scale_mask` kernel
+   computes a 64-bit division and modulo per element and is itself far from
+   bandwidth-bound at these sizes. The ratio against PyTorch eager (Kaggle)
+   is the fairer measure of fusion here; this row of the table overstates it.
+4. Correctness and policy: **met.**
+3. (vs PyTorch) and the NCU check are pending (Kaggle; elevated prompt).

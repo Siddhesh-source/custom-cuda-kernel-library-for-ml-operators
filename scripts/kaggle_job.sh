@@ -82,6 +82,15 @@ run_op() {
     "$BIN/ccml_bench_$op" --peaks "$peaks" --out "$RES/$op.csv" "${extra[@]}" \
       2> "$OUT/logs/bench_$op.log"
     echo "exit $?"; tail -3 "$OUT/logs/bench_$op.log"
+    if [ "$op" = "softmax" ] && [ -x "$BIN/ccml_bench_softmax_masked" ]; then
+      step "C++ bench: fused scale + mask softmax (F3 / F4)"
+      local mimpls=()
+      [ "$IMPLS" != "all" ] && mimpls=(--impls "$IMPLS")
+      "$BIN/ccml_bench_softmax_masked" --peaks "$peaks" --out "$RES/softmax_masked.csv" \
+        --dtype "${CCML_ROWWISE_DTYPES:-f32,f16,bf16}" "${mimpls[@]}" \
+        2> "$OUT/logs/bench_softmax_masked.log"
+      echo "exit $?"; tail -3 "$OUT/logs/bench_softmax_masked.log"
+    fi
     if [ "$op" = "layernorm" ] && [ -x "$BIN/ccml_bench_layernorm_residual" ]; then
       step "C++ bench: fused residual + layer norm (F2 / F4)"
       local rimpls=()
@@ -113,6 +122,7 @@ run_op() {
     step "Python baselines: $op (${py_impls[*]}, compile mode $mode)"
     local ops="$op"
     [ "$op" = "layernorm" ] && ops="layernorm,layernorm_residual"
+    [ "$op" = "softmax" ] && ops="softmax,softmax_masked"
     "$PY" "$SRC/scripts/bench_torch.py" --out-dir "$RES" --peaks "$peaks" --ops "$ops" \
       --impls "$(IFS=,; echo "${py_impls[*]}")" --compile-mode "$mode" \
       --matmul-dtypes "${CCML_MATMUL_DTYPES:-f32,f16,bf16}" \

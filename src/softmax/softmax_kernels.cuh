@@ -344,6 +344,128 @@ __global__ void softmax_split_write(T* y, const OnlineMaxSum* partial, const T* 
   }
 }
 
+/* ------------------------------------------------- fused scale + mask ---
+ *
+ * docs/optimization-log.md entry 16 (enhancement F3).
+ *   v = x * scale + mask[row % mask_rows][c]          (mask may be null)
+ *   causal_q > 0: q = row % causal_q; key c is masked (v = -inf) when
+ *                 c > q + (cols - causal_q)
+ * A fully masked row is written as zeros (not NaN); a NaN in x still makes its
+ * row NaN.
+ */
+struct SoftmaxMask {
+  const void* mask;
+  int mask_rows;
+  float scale;
+  int causal_q;
+};
+
+template <typename T>
+__device__ __forceinline__ float masked_value(float xv, const T* mask_row, int c, int causal_limit,
+                                              const SoftmaxMask& m) {
+  using ccml::detail::to_float;
+  float v = xv * m.scale;
+  if (mask_row != nullptr) v += to_float(mask_row[c]);
+  if (c > causal_limit) v = -INFINITY;
+  return v;
+}
+
+/* Causal limit of `row`: the largest unmasked key index (INT_MAX: no causal). */
+__device__ __forceinline__ int causal_limit_of(int row, int cols, const SoftmaxMask& m) {
+  if (m.causal_q <= 0) return 0x7fffffff;
+  return row % m.causal_q + (cols - m.causal_q);
+}
+
+/* Warp per row with the mask fused into the load (entry 14's structure). */
+template <typename T, int kV, int kChunks>
+__global__ void __launch_bounds__(32 * kSoftmaxRowsPerBlock)
+softmax_masked_warp_per_row(T* y, const T* x, int rows, int cols, SoftmaxMask msk) {
+  using ccml::detail::to_float;
+  using Chunk = SoftmaxChunk<T, kV>;
+  const int lane = static_cast<int>(threadIdx.x) % 32;
+  const int row = static_cast<int>(blockIdx.x) * kSoftmaxRowsPerBlock +
+                  static_cast<int>(threadIdx.x) / 32;
+  if (row >= rows) return;
+  const long long base = static_cast<long long>(row) * cols;
+  const T* mask_row = msk.mask == nullptr
+                          ? nullptr
+                          : static_cast<const T*>(msk.mask) +
+                                static_cast<long long>(row % msk.mask_rows) * cols;
+  const int limit = causal_limit_of(row, cols, msk);
+
+  float v[kChunks][kV];
+  float m = -INFINITY;
+  bool nan = false;
+#pragma unroll
+  for (int j = 0; j < kChunks; ++j) {
+    const int c0 = (lane + 32 * j) * kV;
+    if (c0 < cols) {
+      const Chunk in = *reinterpret_cast<const Chunk*>(x + base + c0);
+#pragma unroll
+      for (int e = 0; e < kV; ++e) {
+        const float xv = to_float(in.v[e]);
+        nan |= xv != xv;
+        v[j][e] = masked_value<T>(xv, mask_row, c0 + e, limit, msk);
+        m = v[j][e] > m ? v[j][e] : m;
+      }
+    } else {
+#pragma unroll
+      for (int e = 0; e < kV; ++e) v[j][e] = -INFINITY;
+    }
+  }
+  m = warp_max(m);
+  if (__any_sync(0xffffffffu, nan)) m = NAN;
+  const bool all_masked = m == -INFINITY; /* NaN compares false: stays NaN */
+  float s = 0.0f;
+#pragma unroll
+  for (int j = 0; j < kChunks; ++j) {
+#pragma unroll
+    for (int e = 0; e < kV; ++e) {
+      v[j][e] = (v[j][e] == -INFINITY && m == m) ? 0.0f : expf(v[j][e] - m);
+      s += v[j][e];
+    }
+  }
+  const float inv = all_masked ? 0.0f : 1.0f / warp_sum_f(s);
+#pragma unroll
+  for (int j = 0; j < kChunks; ++j) {
+    const int c0 = (lane + 32 * j) * kV;
+    if (c0 < cols) {
+      Chunk out;
+#pragma unroll
+      for (int e = 0; e < kV; ++e) out.v[e] = ccml::detail::from_float<T>(v[j][e] * inv);
+      *reinterpret_cast<Chunk*>(y + base + c0) = out;
+    }
+  }
+}
+
+/* Block per row (ONLINE) with the mask fused; any width. */
+template <typename T>
+__global__ void softmax_masked_online(T* y, const T* x, int rows, int cols, SoftmaxMask msk) {
+  using ccml::detail::to_float;
+  const int row = static_cast<int>(blockIdx.x);
+  if (row >= rows) return;
+  const long long base = static_cast<long long>(row) * cols;
+  const T* mask_row = msk.mask == nullptr
+                          ? nullptr
+                          : static_cast<const T*>(msk.mask) +
+                                static_cast<long long>(row % msk.mask_rows) * cols;
+  const int limit = causal_limit_of(row, cols, msk);
+  __shared__ OnlineMaxSum scratch[32];
+  OnlineMaxSum st{-INFINITY, 0.0f};
+  for (int c = static_cast<int>(threadIdx.x); c < cols; c += static_cast<int>(blockDim.x)) {
+    online_add(st, masked_value<T>(to_float(x[base + c]), mask_row, c, limit, msk));
+  }
+  st = online_block_reduce(st, scratch);
+  /* Fully masked: m = -inf and s = 0 exactly (a NaN would have made s NaN). */
+  const bool all_masked = st.m == -INFINITY && st.s == 0.0f;
+  const float inv = all_masked ? 0.0f : 1.0f / st.s;
+  for (int c = static_cast<int>(threadIdx.x); c < cols; c += static_cast<int>(blockDim.x)) {
+    const float v = masked_value<T>(to_float(x[base + c]), mask_row, c, limit, msk);
+    const float e = (all_masked || v == -INFINITY) && st.s == st.s ? 0.0f : expf(v - st.m);
+    y[base + c] = ccml::detail::from_float<T>(e * inv);
+  }
+}
+
 }  // namespace kernels
 }  // namespace ccml
 

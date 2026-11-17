@@ -59,6 +59,34 @@ CCML_API ccml_status ccml_softmax_bf16(ccml_bf16*       y,
                                        ccml_softmax_algo algo,
                                        cudaStream_t     stream);
 
+/*
+ * Fused scale + mask softmax (attention scores):
+ *
+ *   v[r, c] = x[r, c] * scale + mask[r % mask_rows, c]       (mask may be NULL)
+ *   causal_q > 0: with q = r % causal_q, key c is masked (v = -inf) when
+ *                 c > q + (cols - causal_q)   (bottom-right aligned; causal_q =
+ *                 cols for self-attention)
+ *   y[r, :] = softmax(v[r, :])
+ *
+ * mask: [mask_rows, cols] additive (0 or -inf for a padding mask), same storage
+ * type as x. A FULLY MASKED row is written as zeros, not NaN (the attention
+ * convention: a padded query has no valid key). A NaN in x still gives a NaN
+ * row. algo: WARP_PER_ROW (cols <= 1024), ONLINE (any width) or AUTO; others
+ * return CCML_ERROR_NOT_IMPLEMENTED.
+ */
+CCML_API ccml_status ccml_softmax_masked_f32(float* y, const float* x, const float* mask,
+                                             int mask_rows, int rows, int cols, float scale,
+                                             int causal_q, ccml_softmax_algo algo,
+                                             cudaStream_t stream);
+CCML_API ccml_status ccml_softmax_masked_f16(ccml_f16* y, const ccml_f16* x,
+                                             const ccml_f16* mask, int mask_rows, int rows,
+                                             int cols, float scale, int causal_q,
+                                             ccml_softmax_algo algo, cudaStream_t stream);
+CCML_API ccml_status ccml_softmax_masked_bf16(ccml_bf16* y, const ccml_bf16* x,
+                                              const ccml_bf16* mask, int mask_rows, int rows,
+                                              int cols, float scale, int causal_q,
+                                              ccml_softmax_algo algo, cudaStream_t stream);
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif

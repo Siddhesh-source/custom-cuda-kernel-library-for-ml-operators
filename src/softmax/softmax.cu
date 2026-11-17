@@ -167,6 +167,77 @@ ccml_status softmax(Public* y_pub, const Public* x_pub, int rows, int cols,
   }
 }
 
+/* --------------------------------------------- fused scale + mask --- */
+
+template <typename T, int kV, int kChunks>
+ccml_status launch_mwpr(T* y, const T* x, int rows, int cols,
+                        const ccml::kernels::SoftmaxMask& m, cudaStream_t stream) {
+  constexpr int kRows = ccml::kernels::kSoftmaxRowsPerBlock;
+  ccml::detail::LaunchConfig config;
+  config.block = dim3(32 * kRows, 1, 1);
+  config.grid = dim3(static_cast<unsigned>((rows + kRows - 1) / kRows), 1, 1);
+  void (*const softmax_masked_warp_per_row)(T*, const T*, int, int, ccml::kernels::SoftmaxMask) =
+      &ccml::kernels::softmax_masked_warp_per_row<T, kV, kChunks>;
+  CCML_LAUNCH(softmax_masked_warp_per_row, config, stream, y, x, rows, cols, m);
+  return CCML_SUCCESS;
+}
+
+template <typename T, int kV>
+ccml_status launch_mwpr_chunks(T* y, const T* x, int rows, int cols,
+                               const ccml::kernels::SoftmaxMask& m, cudaStream_t stream) {
+  const int chunks = (cols / kV + 31) / 32;
+  if (chunks <= 1) return launch_mwpr<T, kV, 1>(y, x, rows, cols, m, stream);
+  if (chunks <= 2) return launch_mwpr<T, kV, 2>(y, x, rows, cols, m, stream);
+  if (chunks <= 4) return launch_mwpr<T, kV, 4>(y, x, rows, cols, m, stream);
+  if (chunks <= 8) return launch_mwpr<T, kV, 8>(y, x, rows, cols, m, stream);
+  if (chunks <= 16) return launch_mwpr<T, kV, 16>(y, x, rows, cols, m, stream);
+  return launch_mwpr<T, kV, 32>(y, x, rows, cols, m, stream);
+}
+
+template <typename Public>
+ccml_status softmax_masked(Public* y_pub, const Public* x_pub, const Public* mask_pub,
+                           int mask_rows, int rows, int cols, float scale, int causal_q,
+                           ccml_softmax_algo algo, cudaStream_t stream) {
+  using T = ccml::detail::device_t<Public>;
+  ccml::detail::clear_last_error();
+  const ccml_status valid = validate(y_pub, x_pub, rows, cols);
+  if (valid != CCML_SUCCESS) return valid;
+  const std::string fn = std::string("ccml_softmax_masked_") + ccml::detail::dtype_suffix<Public>();
+  CCML_REQUIRE(mask_pub == nullptr || mask_rows > 0, CCML_ERROR_INVALID_ARGUMENT,
+               (fn + ": mask_rows must be positive when a mask is given").c_str());
+  CCML_REQUIRE(causal_q >= 0, CCML_ERROR_INVALID_ARGUMENT,
+               (fn + ": causal_q must be >= 0 (0 = no causal mask)").c_str());
+  T* y = ccml::detail::device_ptr(y_pub);
+  const T* x = ccml::detail::device_ptr(x_pub);
+  ccml::kernels::SoftmaxMask m{ccml::detail::device_ptr(mask_pub), mask_pub ? mask_rows : 1,
+                               scale, causal_q};
+  if (algo == CCML_SOFTMAX_AUTO) algo = cols <= 1024 ? CCML_SOFTMAX_WARP_PER_ROW : CCML_SOFTMAX_ONLINE;
+  switch (algo) {
+    case CCML_SOFTMAX_WARP_PER_ROW: {
+      if (cols > 1024) {
+        ccml::detail::set_last_error(
+            (fn + ": WARP_PER_ROW holds a row in one warp's registers, so cols <= 1024").c_str());
+        return CCML_ERROR_UNSUPPORTED_SHAPE;
+      }
+      constexpr int kV = static_cast<int>(16 / sizeof(T));
+      const bool vec = cols % kV == 0 && reinterpret_cast<std::uintptr_t>(x) % 16 == 0 &&
+                       reinterpret_cast<std::uintptr_t>(y) % 16 == 0;
+      return vec ? launch_mwpr_chunks<T, kV>(y, x, rows, cols, m, stream)
+                 : launch_mwpr_chunks<T, 1>(y, x, rows, cols, m, stream);
+    }
+    case CCML_SOFTMAX_ONLINE: {
+      const ccml::detail::LaunchConfig config = ccml::detail::rowwise_launch_config(
+          rows, cols, ccml::kernels::kSoftmaxBlockSize);
+      CCML_LAUNCH(ccml::kernels::softmax_masked_online<T>, config, stream, y, x, rows, cols, m);
+      return CCML_SUCCESS;
+    }
+    default:
+      ccml::detail::set_last_error(
+          (fn + ": the fused mask exists for WARP_PER_ROW and ONLINE only").c_str());
+      return CCML_ERROR_NOT_IMPLEMENTED;
+  }
+}
+
 }  // namespace
 
 extern "C" {
@@ -195,6 +266,24 @@ ccml_status ccml_softmax_f16(ccml_f16* y, const ccml_f16* x, int rows, int cols,
 ccml_status ccml_softmax_bf16(ccml_bf16* y, const ccml_bf16* x, int rows, int cols,
                               ccml_softmax_algo algo, cudaStream_t stream) {
   return softmax(y, x, rows, cols, algo, stream);
+}
+
+ccml_status ccml_softmax_masked_f32(float* y, const float* x, const float* mask, int mask_rows,
+                                    int rows, int cols, float scale, int causal_q,
+                                    ccml_softmax_algo algo, cudaStream_t stream) {
+  return softmax_masked(y, x, mask, mask_rows, rows, cols, scale, causal_q, algo, stream);
+}
+
+ccml_status ccml_softmax_masked_f16(ccml_f16* y, const ccml_f16* x, const ccml_f16* mask,
+                                    int mask_rows, int rows, int cols, float scale, int causal_q,
+                                    ccml_softmax_algo algo, cudaStream_t stream) {
+  return softmax_masked(y, x, mask, mask_rows, rows, cols, scale, causal_q, algo, stream);
+}
+
+ccml_status ccml_softmax_masked_bf16(ccml_bf16* y, const ccml_bf16* x, const ccml_bf16* mask,
+                                     int mask_rows, int rows, int cols, float scale, int causal_q,
+                                     ccml_softmax_algo algo, cudaStream_t stream) {
+  return softmax_masked(y, x, mask, mask_rows, rows, cols, scale, causal_q, algo, stream);
 }
 
 }  // extern "C"

@@ -96,6 +96,34 @@ def setup(op: str, shape: dict, impls: list[str], mode: str, dtype: str = "f32")
 
     rows, cols = shape["rows"], shape["cols"]
     x = torch.randn(rows, cols, device="cuda", generator=g)
+    if op == "softmax_masked":
+        # softmax(x * scale + mask), the unfused PyTorch way, on attention
+        # shapes, causal (self-attention) and padding (last 1/8 of keys -inf),
+        # as bench/bench_softmax_masked.cpp. Reference: fp64 softmax of the
+        # logits PyTorch itself formed in the storage dtype.
+        causal = shape["mask"] == "causal"
+        x = torch.randn(rows, cols, device="cuda", generator=g) * 3
+        x = x.to(TORCH_DTYPE[dtype])
+        if causal:
+            q = torch.arange(rows, device="cuda") % cols
+            keep = torch.arange(cols, device="cuda")[None, :] <= q[:, None]
+            mask = torch.zeros(rows, cols, device="cuda").masked_fill(~keep, float("-inf"))
+        else:
+            mask = torch.zeros(1, cols, device="cuda")
+            mask[:, cols - cols // 8:] = float("-inf")
+        mask = mask.to(TORCH_DTYPE[dtype])
+        logits = x * 0.125 + mask
+        ref = torch.softmax(logits.double(), dim=-1)
+        tol = bl.widen_for_storage(bl.tolerance_softmax(cols), dtype)
+        if "eager" in impls:
+            cands.append(bl.Candidate("pytorch_eager", "softmax(x*s+mask)",
+                                      lambda: torch.softmax(x * 0.125 + mask, dim=-1)))
+        if "compile" in impls:
+            cf = compiled(lambda a, m: torch.softmax(a * 0.125 + m, dim=-1), mode)
+            cands.append(bl.Candidate("torch_compile", mode, lambda: cf(x, mask)))
+        nbytes = float(2 * rows * cols + (0 if causal else cols)) * ELEM_BYTES[dtype]
+        return ref, tol, 0.0, nbytes, cands
+
     if op == "layernorm_residual":
         # LN(x + r + b), the unfused PyTorch way (an add, then F.layer_norm).
         # Reference: fp64 layer norm of the sum PyTorch itself formed in the
@@ -203,8 +231,13 @@ def main() -> int:
             out.write(bl.CSV_HEADER + "\n")
             dtypes = {"matmul": args.matmul_dtypes, "layernorm": args.layernorm_dtypes,
                       "layernorm_residual": args.layernorm_dtypes,
-                      "softmax": args.softmax_dtypes}.get(op, "f32").split(",")
-            shape_list = shapes["layernorm" if op == "layernorm_residual" else op]
+                      "softmax": args.softmax_dtypes,
+                      "softmax_masked": args.softmax_dtypes}.get(op, "f32").split(",")
+            if op == "softmax_masked":
+                shape_list = [dict(s, tag=s["tag"] + "." + mk, mask=mk) for s in shapes["softmax"]
+                              if ".attn." in s["tag"] for mk in ("causal", "padding")]
+            else:
+                shape_list = shapes["layernorm" if op == "layernorm_residual" else op]
             for shape, dtype in ((s, d) for s in shape_list for d in dtypes):
                 if args.filter and args.filter not in shape["tag"]:
                     continue
