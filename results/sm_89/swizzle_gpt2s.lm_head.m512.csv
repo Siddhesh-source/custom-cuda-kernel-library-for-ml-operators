@@ -1,5 +1,0 @@
-# gpu: NVIDIA GeForce RTX 3050 A Laptop GPU (cc 8.9)  driver: 591.66  cuda runtime: 13.1  commit: unknown
-# peaks: fp32 11.128 TFLOPS theoretical, 8.720 measured; bandwidth 128.0 GB/s theoretical, 114.2 measured (0 = not measured)
-# tensor core peaks (16-bit in, fp32 accumulate): f16 22.257 TFLOPS theoretical, 18.219 measured; bf16 22.257 theoretical, 18.230 measured (0 = none on this GPU or not measured)
-# telemetry: NVML; other compute processes on GPU: 23
-op,impl,algo,dtype,tag,M,N,K,rows,cols,cache,iters,median_us,p10_us,p90_us,iqr_us,min_us,ci95_lo_us,ci95_hi_us,batched_mean_us,tflops,gbps,pct_peak_theory,pct_peak_measured,max_abs_err,max_rel_err,gate,sm_clock_mhz,mem_clock_mhz,temp_c,clock_reasons,throttled,gpu,cc,driver,cuda,commit
