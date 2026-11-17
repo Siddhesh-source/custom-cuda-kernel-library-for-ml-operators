@@ -680,5 +680,5 @@ test, and it is not claimed until then.
    configuration is 2.6x faster than WMMA, now DRAM-bound (89.6% of DRAM
    peak), and the 16-row configuration beats cuBLAS on sm_89. Split-K (S2,
    entry 6) is still worth testing there: at M = 16 the 16x128 grid has 18
-   blocks for 16 SMs on sm_89 and 40 SMs on the T4, so the T4 will be
+   blocks for 14 SMs on sm_89 and 40 SMs on the T4, so the T4 will be
    under-filled.
