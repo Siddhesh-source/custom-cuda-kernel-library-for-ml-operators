@@ -129,6 +129,107 @@ __global__ void layernorm_two_pass(T*       y,
   }
 }
 
+/* ------------------------------------------------------------- Welford ---
+ *
+ * docs/optimization-log.md entry 9. Running statistics of a set of values:
+ * count, mean and M2 = sum of squared deviations from the mean. Updated one
+ * value at a time (Welford) and merged pairwise (Chan et al.), both stable in
+ * FP32 when the values themselves are well scaled -- which the pivot shift
+ * below guarantees.
+ */
+/* A POD (no initializers), so it can live in __shared__ memory. */
+struct Welford {
+  float n;
+  float mean;
+  float m2;
+};
+
+__device__ __forceinline__ void welford_add(Welford& w, float v) {
+  w.n += 1.0f;
+  const float delta = v - w.mean;
+  w.mean += delta / w.n;
+  w.m2 += delta * (v - w.mean);
+}
+
+__device__ __forceinline__ Welford welford_merge(Welford a, const Welford& b) {
+  const float n = a.n + b.n;
+  if (n == 0.0f) return a;
+  const float delta = b.mean - a.mean;
+  const float wb = b.n / n;
+  a.mean += delta * wb;
+  a.m2 += b.m2 + delta * delta * a.n * wb;
+  a.n = n;
+  return a;
+}
+
+__device__ __forceinline__ Welford welford_warp_reduce(Welford w) {
+  constexpr unsigned kFull = 0xffffffffu;
+#pragma unroll
+  for (int offset = 16; offset > 0; offset >>= 1) {
+    Welford o;
+    o.n = __shfl_xor_sync(kFull, w.n, offset);
+    o.mean = __shfl_xor_sync(kFull, w.mean, offset);
+    o.m2 = __shfl_xor_sync(kFull, w.m2, offset);
+    w = welford_merge(w, o);
+  }
+  return w; /* every lane holds the warp's result (xor butterfly) */
+}
+
+/* Block-wide merge; every thread receives the result. Contains barriers. */
+__device__ __forceinline__ Welford welford_block_reduce(Welford w, Welford* scratch) {
+  const int lane = static_cast<int>(threadIdx.x) % 32;
+  const int warp = static_cast<int>(threadIdx.x) / 32;
+  const int warps = (static_cast<int>(blockDim.x) + 31) / 32;
+  w = welford_warp_reduce(w);
+  if (lane == 0) scratch[warp] = w;
+  __syncthreads();
+  Welford total = lane < warps ? scratch[lane] : Welford{0.0f, 0.0f, 0.0f};
+  total = welford_warp_reduce(total);
+  return total;
+}
+
+/*
+ * Single-pass Welford statistics in FP32, block per row (entry 9).
+ *
+ * Every value is first shifted by the row's first element p: d = x - p. The
+ * subtraction is exact when x and p are within a factor of 2 (Sterbenz) and
+ * otherwise rounds relative to |d|, so the statistics are of small, well
+ * scaled numbers and FP32 holds them to ~1e-7 of the spread. That is what
+ * removes the case the FP64 two-pass kernel exists for (mean 10000, stddev
+ * 0.01): x - mean is computed as d - mean(d) and the large intermediate never
+ * appears. Pass 1 reads the row once for the statistics; pass 2 reads it again
+ * to write.
+ *
+ *   grid = (rows), block = (threads), a multiple of 32
+ */
+template <typename T>
+__global__ void layernorm_welford(T* y, const T* x, const T* gamma, const T* beta, int rows,
+                                  int cols, float eps) {
+  using ccml::detail::to_float;
+  const int row = static_cast<int>(blockIdx.x);
+  if (row >= rows) return;
+  const long long base = static_cast<long long>(row) * cols;
+  const T* __restrict__ row_in = x + base;
+  T* __restrict__ row_out = y + base;
+  __shared__ Welford scratch[32];
+
+  const float pivot = to_float(row_in[0]);
+  Welford w{0.0f, 0.0f, 0.0f};
+  for (int c = static_cast<int>(threadIdx.x); c < cols; c += static_cast<int>(blockDim.x)) {
+    welford_add(w, to_float(row_in[c]) - pivot);
+  }
+  w = welford_block_reduce(w, scratch);
+
+  const float mean_d = w.mean;
+  const float rstd = 1.0f / sqrtf(w.m2 / static_cast<float>(cols) + eps);
+  for (int c = static_cast<int>(threadIdx.x); c < cols; c += static_cast<int>(blockDim.x)) {
+    float v = (to_float(row_in[c]) - pivot - mean_d) * rstd;
+    if (gamma != nullptr) v *= to_float(gamma[c]);
+    if (beta != nullptr) v += to_float(beta[c]);
+    row_out[c] = ccml::detail::from_float<T>(v);
+  }
+}
+
 }  // namespace kernels
 }  // namespace ccml
 

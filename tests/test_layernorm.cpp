@@ -342,12 +342,62 @@ CCML_TEST(layernorm, rejects_null_and_nonpositive_dimensions) {
             "zero cols should be rejected");
 }
 
-CCML_TEST(layernorm, welford_is_reserved_not_silently_substituted) {
-  float dummy = 0.0f;
-  const ccml_status status =
-      ccml_layernorm_f32(&dummy, &dummy, nullptr, nullptr, 1, 1, kEps,
-                         CCML_LAYERNORM_WELFORD, nullptr);
-  ctx.check(status == CCML_ERROR_NOT_IMPLEMENTED,
-            "an unbuilt algorithm must report NOT_IMPLEMENTED, not fall back "
-            "to a different one");
+/* ------------------------------------------- every algorithm, every case --- */
+
+/* Each built algorithm must meet the same FP32 tolerance on every case above:
+   the numerics cases (mean far from zero) most of all, because the FP32
+   variants rely on the pivot shift for them (optimization log entry 9). */
+const ccml_layernorm_algo kAlgos[] = {CCML_LAYERNORM_TWO_PASS, CCML_LAYERNORM_WELFORD};
+
+CCML_TEST(layernorm, every_algorithm_on_every_case) {
+  struct Case {
+    Shape shape;
+    float mean, stddev;
+  };
+  const Case cases[] = {
+      {{8, 1}, 0, 1},       {{8, 7}, 0, 1},       {{8, 33}, 0, 1},       {{128, 1}, 0, 1},
+      {{33, 517}, 0, 1},    {{17, 1023}, 0, 1},   {{17, 1025}, 0, 1},    {{7, 4097}, 0, 1},
+      {{5, 6143}, 0, 1},    {{16, 16384}, 0, 1},  {{4099, 768}, 0, 1},   {{64, 2048}, 0, 1},
+      {{32, 512}, 10000.0f, 0.01f},  {{64, 1024}, 1000.0f, 1.0f},
+      {{64, 768}, -5000.0f, 0.5f},   {{16, 4096}, 100.0f, 0.001f}};
+  for (ccml_layernorm_algo algo : kAlgos) {
+    double worst = 0.0;
+    for (const Case& c : cases) {
+      CaseOptions o;
+      o.input_mean = c.mean;
+      o.input_stddev = c.stddev;
+      o.algo = algo;
+      worst = std::fmax(worst, run_case(ctx, c.shape, o, 800 + c.shape.cols).max_normalized_error);
+    }
+    ctx.note(std::string(ccml_layernorm_algo_name(algo)) + ": worst normalized error " +
+             std::to_string(worst));
+  }
+}
+
+/* A pivot that is an outlier of its row (first element 1000 standard
+   deviations from the rest) must not break the FP32 algorithms: Welford's
+   update is stable for any offset, the pivot only has to keep the numbers
+   small. */
+CCML_TEST(layernorm, outlier_pivot) {
+  for (ccml_layernorm_algo algo : kAlgos) {
+    const int rows = 8, cols = 1000;
+    std::vector<float> host_x(static_cast<std::size_t>(rows) * cols);
+    Rng(900).normal(host_x.data(), host_x.size(), 50.0f, 0.1f);
+    for (int r = 0; r < rows; ++r) host_x[static_cast<std::size_t>(r) * cols] = 150.0f;
+    std::vector<double> expected;
+    ctx.check(ccml_test::layernorm_reference(expected, host_x, {}, {}, rows, cols, kEps),
+              "reference");
+    DeviceBuffer dx(host_x.size()), dy(host_x.size());
+    dx.upload(host_x.data());
+    CCML_ASSERT_OK(ccml_device_memset_async(dy.data(), 0xFF, dy.bytes(), nullptr));
+    CCML_ASSERT_OK_OR_SKIP(ccml_layernorm_f32(dy.data(), dx.data(), nullptr, nullptr, rows, cols,
+                                              kEps, algo, nullptr));
+    CCML_ASSERT_OK(ccml_device_synchronize());
+    std::vector<float> got(host_x.size());
+    dy.download(got.data());
+    const ErrorStats st = ccml_test::compare(got, expected,
+                                             ccml_test::tolerance_for_f32_reduction(cols));
+    ctx.note(std::string(ccml_layernorm_algo_name(algo)) + ": " + st.to_string());
+    ctx.check(ccml_test::within(st), "outlier pivot exceeded tolerance");
+  }
 }

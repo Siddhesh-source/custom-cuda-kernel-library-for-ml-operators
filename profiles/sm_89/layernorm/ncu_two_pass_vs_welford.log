@@ -1,0 +1,46 @@
+﻿ncu: C:\Program Files\NVIDIA Corporation\Nsight Compute 2026.1.1\ncu.bat
+bench: D:\ccml-layernorm\build\local\bin\ccml_bench_layernorm.exe
+2026-11-17T17:10:20.0049220+05:30
+
+#### h768.rows8192
+==PROF== Connected to process 33972 (D:\ccml-layernorm\build\local\bin\ccml_bench_layernorm.exe)
+# gpu: NVIDIA GeForce RTX 3050 A Laptop GPU (cc 8.9)  driver: 591.66  cuda runtime: 13.1  commit: unknown
+# peaks: fp32 11.128 TFLOPS theoretical, 0.000 measured; bandwidth 128.0 GB/s theoretical, 0.0 measured (0 = not measured)
+# tensor core peaks (16-bit in, fp32 accumulate): f16 22.257 TFLOPS theoretical, 0.000 measured; bf16 22.257 theoretical, 0.000 measured (0 = none on this GPU or not measured)
+# telemetry: NVML; other compute processes on GPU: 25
+op,impl,algo,dtype,tag,M,N,K,rows,cols,cache,iters,median_us,p10_us,p90_us,iqr_us,min_us,ci95_lo_us,ci95_hi_us,batched_mean_us,tflops,gbps,pct_peak_theory,pct_peak_measured,max_abs_err,max_rel_err,gate,sm_clock_mhz,mem_clock_mhz,temp_c,clock_reasons,throttled,gpu,cc,driver,cuda,commit
+==PROF== Profiling "layernorm_two_pass": 0%....50%....100% - 18 passes
+==PROF== Profiling "layernorm_welford": 0%....50%....100% - 18 passes
+layernorm,ccml,two_pass,f32,h768.rows8192,0,0,0,8192,768,warm,100,2768.72,2763.45,3214.38,450.312,2762.66,2764.16,2992.14,2774.04,,18.181,14.2,,2.384e-07,5.96e-08,PASS,2205,8001,48,0x1,0,"NVIDIA GeForce RTX 3050 A Laptop GPU",8.9,591.66,13.1,unknown
+layernorm,ccml,welford,f32,h768.rows8192,0,0,0,8192,768,warm,100,432.624,431.642,456.598,23.096,428.384,432.432,433.088,445.342,,116.35,90.89,,1.304e-06,0.1031,PASS,2205,8001,48,0x1,0,"NVIDIA GeForce RTX 3050 A Laptop GPU",8.9,591.66,13.1,unknown
+ncu.bat : done layernorm h768.rows8192
+At D:\ccml-layernorm\scripts\ncu_matmul.ps1:80 char:3
++   & $ncu @nargs 2>&1 | Out-File -Append -Encoding utf8 $log
++   ~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (done layernorm h768.rows8192:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+==PROF== Disconnected from process 33972
+==PROF== Report: D:\ccml-layernorm\profiles\sm_89\layernorm\two_pass_vs_welford_h768.rows8192.ncu-rep
+
+#### h4096.rows16
+==PROF== Connected to process 3888 (D:\ccml-layernorm\build\local\bin\ccml_bench_layernorm.exe)
+# gpu: NVIDIA GeForce RTX 3050 A Laptop GPU (cc 8.9)  driver: 591.66  cuda runtime: 13.1  commit: unknown
+# peaks: fp32 11.128 TFLOPS theoretical, 0.000 measured; bandwidth 128.0 GB/s theoretical, 0.0 measured (0 = not measured)
+# tensor core peaks (16-bit in, fp32 accumulate): f16 22.257 TFLOPS theoretical, 0.000 measured; bf16 22.257 theoretical, 0.000 measured (0 = none on this GPU or not measured)
+# telemetry: NVML; other compute processes on GPU: 25
+op,impl,algo,dtype,tag,M,N,K,rows,cols,cache,iters,median_us,p10_us,p90_us,iqr_us,min_us,ci95_lo_us,ci95_hi_us,batched_mean_us,tflops,gbps,pct_peak_theory,pct_peak_measured,max_abs_err,max_rel_err,gate,sm_clock_mhz,mem_clock_mhz,temp_c,clock_reasons,throttled,gpu,cc,driver,cuda,commit
+==PROF== Profiling "layernorm_two_pass": 0%....50%....100% - 18 passes
+==PROF== Profiling "layernorm_welford": 0%....50%....100% - 18 passes
+layernorm,ccml,two_pass,f32,h4096.rows16,0,0,0,16,4096,warm,100,37.376,37.1808,37.568,0.191998,36.96,37.328,37.408,36.2186,,14.904,11.64,,2.346e-07,5.939e-08,PASS,2205,8001,48,0x1,0,"NVIDIA GeForce RTX 3050 A Laptop GPU",8.9,591.66,13.1,unknown
+layernorm,ccml,welford,f32,h4096.rows16,0,0,0,16,4096,warm,100,8.688,8.576,8.992,0.224,8.48,8.64,8.736,28.8813,,64.118,50.09,,7.902e-07,0.01473,PASS,2205,8001,48,0x1,0,"NVIDIA GeForce RTX 3050 A Laptop GPU",8.9,591.66,13.1,unknown
+ncu.bat : done layernorm h4096.rows16
+At D:\ccml-layernorm\scripts\ncu_matmul.ps1:80 char:3
++   & $ncu @nargs 2>&1 | Out-File -Append -Encoding utf8 $log
++   ~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (done layernorm h4096.rows16:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+==PROF== Disconnected from process 3888
+==PROF== Report: D:\ccml-layernorm\profiles\sm_89\layernorm\two_pass_vs_welford_h4096.rows16.ncu-rep
+done 2026-11-17T17:10:26.2703633+05:30

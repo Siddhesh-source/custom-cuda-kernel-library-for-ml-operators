@@ -62,10 +62,13 @@ ccml_status layernorm(Public* y_pub, const Public* x_pub, const Public* gamma_pu
       return CCML_SUCCESS;
     }
 
-    case CCML_LAYERNORM_WELFORD:
-      ccml::detail::set_last_error(
-          (fn_name<Public>() + ": the Welford algorithm is reserved but not built").c_str());
-      return CCML_ERROR_NOT_IMPLEMENTED;
+    case CCML_LAYERNORM_WELFORD: {
+      const ccml::detail::LaunchConfig config = ccml::detail::rowwise_launch_config(
+          rows, cols, ccml::kernels::kLayerNormBlockSize);
+      CCML_LAUNCH(ccml::kernels::layernorm_welford<T>, config, stream,
+                  y, x, gamma, beta, rows, cols, eps);
+      return CCML_SUCCESS;
+    }
 
     default:
       ccml::detail::set_last_error((fn_name<Public>() + ": unknown algorithm").c_str());

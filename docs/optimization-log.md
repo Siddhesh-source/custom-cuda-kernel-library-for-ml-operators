@@ -1152,7 +1152,8 @@ median ratio of the competitor's time to ccml fused:
 
 ## 9. Layernorm: single-pass Welford in FP32 on pivot-shifted data (`CCML_LAYERNORM_WELFORD`)
 
-**Status:** hypothesis committed before the code.
+**Status:** implemented and correct (FP32, FP16, BF16). Local sm_89 evidence
+below; T4 result at the end of the entry when it lands.
 
 ### Hypothesis
 
@@ -1198,3 +1199,75 @@ x - mean = d - mean(d) never forms the large intermediate.
 **What would falsify it:** a speedup under 2x (the FP64 was not the limit:
 the block-per-row structure is), or `large_offset_small_variance` failing
 (the pivot argument is wrong in practice).
+
+### Change
+
+- `Welford`, `welford_add`, `welford_merge` (Chan), `welford_warp_reduce`
+  (xor butterfly), `welford_block_reduce` and `layernorm_welford<T>` in
+  `src/layernorm/layernorm_kernels.cuh`; `CCML_LAYERNORM_WELFORD` dispatches
+  it (it was reserved and returned NOT_IMPLEMENTED).
+- Tests: `layernorm.every_algorithm_on_every_case` runs both algorithms on 16
+  cases (1 to 16384 columns, awkward widths, 4099 rows, and four offset cases:
+  mean 10000 / stddev 0.01, 1000 / 1, -5000 / 0.5, 100 / 0.001) at the FP32
+  tolerance; `layernorm.outlier_pivot` makes the pivot an outlier (first
+  element 1000 stddevs from the row's mean); `dtypes.{F16,BF16}_layernorm` now
+  run every algorithm.
+- Bench: `ccml_bench_layernorm --dtype f32,f16,bf16` (FP16/BF16 rounded
+  inputs, widened tolerance); `bench_torch.py --layernorm-dtypes`; the Kaggle
+  job runs all three dtypes for layernorm.
+
+### Evidence
+
+**Correctness (sm_89):** worst normalized error over the 16 cases: TWO_PASS
+0.011, **WELFORD 0.062**, both within tolerance; mean 10000 / stddev 0.01
+passes at the FP32 tolerance. Outlier pivot: WELFORD 0.090 (TWO_PASS 0.001).
+9/9 suites pass.
+
+**Timings, local sm_89 (indicative), warm L2, median of 200**
+(`results/sm_89/layernorm_welford.csv`, peaks `peaks_layernorm.json`: DRAM
+114 GB/s measured):
+
+| Shape (rows x cols) | two_pass f32 | **welford f32** | welford GB/s | two_pass f16 | welford f16 |
+|---|---|---|---|---|---|
+| 8192 x 768 | 2,781 us | **432 us (6.4x)** | 117 | 2,780 | 332 (8.4x) |
+| 8192 x 4096 | 8,522 | **2,372 (3.6x)** | 113 | 8,526 | 1,238 (6.9x) |
+| 2048 x 1024 | 811 | **90.1 (9.0x)** | 186 (L2) | 812 | 85.0 (9.6x) |
+| 512 x 2048 | 319 | **32.7 (9.7x)** | 257 (L2) | 319 | 31.7 (10.0x) |
+| 128 x 768 | 51.2 | **10.2 (5.0x)** | 77 | 51.2 | 9.2 (5.6x) |
+| 16 x 4096 | 32.8 | **8.2 (4.0x)** | 68 | 32.8 | 9.2 (3.6x) |
+| 1 x 768 | 9.2 | 5.1 (1.8x) | 2 | 9.2 | 5.1 (1.8x) |
+
+On the large shapes WELFORD runs at **99-103% of the measured DRAM peak**
+(113-117 GB/s against 114; the byte count is the minimum, 2 x rows x cols,
+and the second read of a row is served by L2). Smaller tensors fit the 32 MB
+L2 and exceed DRAM bandwidth.
+
+**Nsight Compute, local sm_89, FP32** (`profiles/sm_89/layernorm/two_pass_vs_welford_*`,
+`scripts/ncu_matmul.ps1 -Name two_pass_vs_welford -Kernel "layernorm_[tw][we]" -Count 2 -Dtype f32 -Bench ccml_bench_layernorm -Op layernorm -Shapes h768.rows8192,h4096.rows16`):
+
+| Metric (8192 x 768 / 16 x 4096) | two_pass | welford |
+|---|---|---|
+| Duration under the profiler | 3.21 ms / 35.7 us | **0.44 ms / 9.5 us** |
+| **FP64 pipe active** | **87.1% / 78.4%** | **0 / 0** |
+| FP64 instructions | 5.39 M / 32.2 K | 0 / 0 |
+| DRAM throughput, % of peak | 12.6% / 6.9% | **76.9% / 48.4%** |
+| Instructions executed | 30.2 M / 109 K | 40.2 M / 138 K (Welford's per-element division) |
+| Registers; warps active | 37; 98.7% | 38; 94.5% |
+
+### Verdict
+
+**Kept**, sm_89 evidence; the T4 decides prediction 1's numbers.
+
+1. 3-6x on large shapes, >= 50% of DRAM peak: **met on sm_89** (3.6-6.4x
+   FP32 at rows = 8192, 99-103% of measured DRAM peak; up to 11x on shapes
+   that fit L2).
+2. Correct at the FP32 tolerance including mean 10000 / stddev 0.01, with no
+   other tolerance widened: **met.**
+3. NCU: **met**: TWO_PASS is FP64-bound (FP64 pipe 87% busy, DRAM 13%);
+   WELFORD has no FP64 and is limited by memory (DRAM 77%). This answers the
+   roadmap's open question: on GPUs with throttled FP64 the "obviously
+   correct" FP64 reductions cost 4-11x, and the pivot shift buys the same
+   accuracy class in FP32.
+4. rows <= 16 barely change: **falsified**: 4.0x at 16 x 4096 and 1.8x at
+   1 x 768. The FP64 cost was per element, not per launch, so it showed even
+   at 16 rows.

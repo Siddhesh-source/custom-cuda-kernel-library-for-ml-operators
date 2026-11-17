@@ -5,7 +5,7 @@ schema as the C++ benches (scripts/benchlib.py mirrors bench/support/).
     python scripts/bench_torch.py --out-dir results/sm_75 --peaks results/sm_75/peaks.json
         [--ops matmul,layernorm,softmax] [--impls eager,compile,triton]
         [--filter TEXT] [--cache warm|cold|both] [--compile-mode max-autotune]
-        [--matmul-dtypes f32,f16,bf16]
+        [--matmul-dtypes f32,f16,bf16] [--layernorm-dtypes f32,f16,bf16]
 
 Matmul in FP16/BF16 runs torch.mm on 16-bit tensors (cuBLAS with Tensor Cores,
 FP32 accumulation); the reference is fp64 of the ROUNDED inputs and the
@@ -98,8 +98,9 @@ def setup(op: str, shape: dict, impls: list[str], mode: str, dtype: str = "f32")
     if op == "layernorm":
         w = torch.rand(cols, device="cuda", generator=g) + 0.5
         bias = torch.rand(cols, device="cuda", generator=g) * 2 - 1
+        x, w, bias = (t.to(TORCH_DTYPE[dtype]) for t in (x, w, bias))
         ref = F.layer_norm(x.double(), (cols,), w.double(), bias.double(), EPS)
-        tol = bl.tolerance_reduction(cols)
+        tol = bl.widen_for_storage(bl.tolerance_reduction(cols), dtype)
         if "eager" in impls:
             cands.append(bl.Candidate("pytorch_eager", "F.layer_norm",
                                       lambda: F.layer_norm(x, (cols,), w, bias, EPS)))
@@ -109,7 +110,7 @@ def setup(op: str, shape: dict, impls: list[str], mode: str, dtype: str = "f32")
         if triton_mod is not None:
             cands.append(bl.Candidate("triton", "tutorial_looped",
                                       lambda: triton_mod.layernorm(x, w, bias, EPS)))
-        return ref, tol, 0.0, bl.layernorm_bytes(rows, cols, 4), cands
+        return ref, tol, 0.0, bl.layernorm_bytes(rows, cols, ELEM_BYTES[dtype]), cands
 
     ref = torch.softmax(x.double(), dim=-1)
     tol = bl.tolerance_softmax(cols)
@@ -137,6 +138,8 @@ def main() -> int:
     ap.add_argument("--compile-mode", default="max-autotune")
     ap.add_argument("--min-iters", type=int, default=100)
     ap.add_argument("--max-iters", type=int, default=200)
+    ap.add_argument("--layernorm-dtypes", default="f32",
+                    help="comma-separated storage types for layernorm: f32, f16, bf16")
     ap.add_argument("--matmul-dtypes", default="f32",
                     help="comma-separated storage types for matmul: f32, f16, bf16")
     args = ap.parse_args()
@@ -170,7 +173,8 @@ def main() -> int:
                       f"{'NVML' if tel.ok else 'unavailable'}; other compute processes: "
                       f"{tel.other_processes()}\n")
             out.write(bl.CSV_HEADER + "\n")
-            dtypes = args.matmul_dtypes.split(",") if op == "matmul" else ["f32"]
+            dtypes = {"matmul": args.matmul_dtypes,
+                      "layernorm": args.layernorm_dtypes}.get(op, "f32").split(",")
             for shape, dtype in ((s, d) for s in shapes[op] for d in dtypes):
                 if args.filter and args.filter not in shape["tag"]:
                     continue

@@ -61,8 +61,9 @@ struct F16 {
     return ccml_matmul_f16(c, a, b, m, n, k, algo, nullptr);
   }
   static ccml_status layernorm(Pub* y, const Pub* x, const Pub* g, const Pub* b,
-                               int rows, int cols, float eps) {
-    return ccml_layernorm_f16(y, x, g, b, rows, cols, eps, CCML_LAYERNORM_AUTO, nullptr);
+                               int rows, int cols, float eps,
+                               ccml_layernorm_algo algo = CCML_LAYERNORM_AUTO) {
+    return ccml_layernorm_f16(y, x, g, b, rows, cols, eps, algo, nullptr);
   }
   static ccml_status softmax(Pub* y, const Pub* x, int rows, int cols) {
     return ccml_softmax_f16(y, x, rows, cols, CCML_SOFTMAX_AUTO, nullptr);
@@ -91,9 +92,9 @@ struct BF16 {
     return ccml_matmul_bf16(c, a, b, m, n, k, algo, nullptr);
   }
   static ccml_status layernorm(Pub* y, const Pub* x, const Pub* g, const Pub* b,
-                               int rows, int cols, float eps) {
-    return ccml_layernorm_bf16(y, x, g, b, rows, cols, eps, CCML_LAYERNORM_AUTO,
-                               nullptr);
+                               int rows, int cols, float eps,
+                               ccml_layernorm_algo algo = CCML_LAYERNORM_AUTO) {
+    return ccml_layernorm_bf16(y, x, g, b, rows, cols, eps, algo, nullptr);
   }
   static ccml_status softmax(Pub* y, const Pub* x, int rows, int cols) {
     return ccml_softmax_bf16(y, x, rows, cols, CCML_SOFTMAX_AUTO, nullptr);
@@ -197,7 +198,8 @@ void check_matmul(const ccml_test::Context& ctx, int M, int N, int K,
 }
 
 template <typename D>
-void check_layernorm(const ccml_test::Context& ctx, int rows, int cols, float offset) {
+void check_layernorm(const ccml_test::Context& ctx, int rows, int cols, float offset,
+                     ccml_layernorm_algo algo = CCML_LAYERNORM_AUTO) {
   using Pub = typename D::Pub;
   const std::size_t n = static_cast<std::size_t>(rows) * cols;
   std::vector<float> x_raw(n), g_raw(static_cast<std::size_t>(cols)), b_raw(static_cast<std::size_t>(cols));
@@ -220,7 +222,8 @@ void check_layernorm(const ccml_test::Context& ctx, int rows, int cols, float of
   ctx.check(dx.ok() && dy.ok() && dg.ok() && dbeta.ok() && dx.upload(x) && dg.upload(g) &&
                 dbeta.upload(b) && dy.poison(),
             "device setup");
-  CCML_ASSERT_OK(D::layernorm(dy.get(), dx.get(), dg.get(), dbeta.get(), rows, cols, kEps));
+  CCML_ASSERT_OK(
+      D::layernorm(dy.get(), dx.get(), dg.get(), dbeta.get(), rows, cols, kEps, algo));
   CCML_ASSERT_OK(ccml_device_synchronize());
   std::vector<Pub> y;
   ctx.check(dy.download(y), "download");
@@ -228,7 +231,8 @@ void check_layernorm(const ccml_test::Context& ctx, int rows, int cols, float of
   const Tolerance tol = ccml_test::widen_for_storage(
       ccml_test::tolerance_for_f32_reduction(cols), D::unit, D::floor);
   report<D>(ctx,
-            "layernorm " + std::to_string(rows) + "x" + std::to_string(cols) +
+            std::string("layernorm ") + ccml_layernorm_algo_name(algo) + " " +
+                std::to_string(rows) + "x" + std::to_string(cols) +
                 " offset=" + std::to_string(offset),
             ccml_test::compare(widen<D>(y), ref, tol), tol);
 }
@@ -267,6 +271,8 @@ void check_softmax(const ccml_test::Context& ctx, int rows, int cols, float scal
 
 const int kMatmulShapes[][3] = {{1, 1, 1}, {17, 33, 65}, {128, 128, 128},
                                 {64, 257, 1023}, {3, 768, 768}, {256, 96, 2048}};
+const ccml_layernorm_algo kLayerNormAlgos[] = {CCML_LAYERNORM_TWO_PASS,
+                                                CCML_LAYERNORM_WELFORD};
 const int kRowShapes[][2] = {{1, 1}, {7, 33}, {64, 768}, {128, 1025}, {16, 4096}, {3, 32000}};
 
 }  // namespace
@@ -284,10 +290,13 @@ const int kRowShapes[][2] = {{1, 1}, {7, 33}, {64, 768}, {128, 1025}, {16, 4096}
     }                                                                            \
   }                                                                              \
   CCML_TEST(dtypes, D##_layernorm) {                                             \
-    for (const auto& s : kRowShapes) check_layernorm<D>(ctx, s[0], s[1], 0.0f);  \
-    /* Mean far from zero: the case two-pass with double accumulation exists */ \
-    /* for. 100 is representable to within its rounding in both formats. */     \
-    check_layernorm<D>(ctx, 64, 768, 100.0f);                                    \
+    for (ccml_layernorm_algo algo : kLayerNormAlgos) {                           \
+      for (const auto& s : kRowShapes)                                           \
+        check_layernorm<D>(ctx, s[0], s[1], 0.0f, algo);                         \
+      /* Mean far from zero: what FP64 two-pass and the FP32 pivot exist */    \
+      /* for. 100 is representable to within its rounding in both formats. */  \
+      check_layernorm<D>(ctx, 64, 768, 100.0f, algo);                            \
+    }                                                                            \
   }                                                                              \
   CCML_TEST(dtypes, D##_softmax) {                                               \
     for (const auto& s : kRowShapes) check_softmax<D>(ctx, s[0], s[1], 1.0f);    \
@@ -433,6 +442,9 @@ CCML_TEST(dtypes, errors_name_the_dtype_entry_point) {
             "detail starts with ccml_matmul_bf16");
   Device16<ccml_bf16> d(4);
   ctx.check(ccml_layernorm_bf16(d.get(), d.get(), nullptr, nullptr, 2, 2, 1e-5f,
-                                CCML_LAYERNORM_WELFORD, nullptr) == CCML_ERROR_NOT_IMPLEMENTED,
-            "reserved variant reports NOT_IMPLEMENTED, never a silent substitute");
+                                static_cast<ccml_layernorm_algo>(99),
+                                nullptr) == CCML_ERROR_INVALID_ARGUMENT,
+            "unknown layernorm algorithm rejected");
+  ctx.check(std::string(ccml_last_error_string()).rfind("ccml_layernorm_bf16", 0) == 0,
+            "detail starts with ccml_layernorm_bf16");
 }

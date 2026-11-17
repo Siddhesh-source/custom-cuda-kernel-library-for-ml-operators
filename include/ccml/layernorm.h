@@ -12,7 +12,7 @@ extern "C" {
 typedef enum ccml_layernorm_algo {
   CCML_LAYERNORM_AUTO     = 0, /* library picks; currently resolves to TWO_PASS */
   CCML_LAYERNORM_TWO_PASS = 1, /* separate mean and variance reductions */
-  CCML_LAYERNORM_WELFORD  = 2  /* single-pass Welford (reserved; not yet built) */
+  CCML_LAYERNORM_WELFORD  = 2  /* single-pass FP32 Welford on pivot-shifted data, block per row */
 } ccml_layernorm_algo;
 
 CCML_API const char* ccml_layernorm_algo_name(ccml_layernorm_algo algo);
@@ -35,11 +35,13 @@ CCML_API const char* ccml_layernorm_algo_name(ccml_layernorm_algo algo);
  * every leading dimension into rows. A [batch, seq, hidden] tensor normalized
  * over hidden is rows = batch * seq, cols = hidden.
  *
- * Reductions accumulate in DOUBLE, unlike the float32 default stated in
- * types.h. The output divides by the standard deviation, so error in the mean
- * is magnified by 1/stddev: a float32 mean at magnitude 10000 carries about
- * 5e-4 of error, which against a standard deviation of 0.01 is a 5% error in
- * every output element. See src/layernorm/layernorm_kernels.cuh.
+ * Precision. The output divides by the standard deviation, so error in the
+ * mean is magnified by 1/stddev: a float32 mean accumulated at magnitude 10000
+ * carries about 5e-4 of error, which against a standard deviation of 0.01 is a
+ * 5% error in every output element. TWO_PASS avoids it by reducing in DOUBLE.
+ * WELFORD reduces in FP32 but first subtracts a pivot (the row's first
+ * element), which removes the large intermediate instead; both meet the same
+ * FP32 tolerance (docs/optimization-log.md entry 9).
  */
 CCML_API ccml_status ccml_layernorm_f32(float*       y,
                                         const float* x,

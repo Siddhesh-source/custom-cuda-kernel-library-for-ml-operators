@@ -19,14 +19,15 @@ param(
   [string]$Dtype = "f16",
   [string]$Impls = "ccml",
   [string]$Extra = "",
-  [string]$Bench = "ccml_bench_matmul"
+  [string]$Bench = "ccml_bench_matmul",
+  [string]$Op = "matmul"
 )
 $ErrorActionPreference = "Continue"
 $root = Split-Path $PSScriptRoot -Parent
 $ncu = Get-ChildItem "C:\Program Files\NVIDIA Corporation\Nsight Compute*\ncu.bat" |
   Sort-Object FullName | Select-Object -Last 1 -ExpandProperty FullName
 $bench = Join-Path $root "build\local\bin\$Bench.exe"
-$out = Join-Path $root "profiles\sm_89\matmul"
+$out = Join-Path $root "profiles\sm_89\$Op"
 New-Item -ItemType Directory -Force $out | Out-Null
 $log = Join-Path $out "ncu_$Name.log"
 "ncu: $ncu`nbench: $bench`n$(Get-Date -Format o)" | Out-File -Encoding utf8 $log
@@ -44,6 +45,8 @@ $metrics = @(
   "lts__t_sector_hit_rate.pct",
   "sm__pipe_fma_cycles_active.avg.pct_of_peak_sustained_active",
   "sm__pipe_tensor_cycles_active.avg.pct_of_peak_sustained_active",
+  "sm__pipe_fp64_cycles_active.avg.pct_of_peak_sustained_active",
+  "sm__inst_executed_pipe_fp64.sum",
   "sm__inst_executed_pipe_tensor.sum",
   "smsp__inst_executed.sum",
   "l1tex__data_bank_conflicts_pipe_lsu_mem_shared_op_ld.sum",
