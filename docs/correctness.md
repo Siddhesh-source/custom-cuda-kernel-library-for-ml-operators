@@ -123,9 +123,9 @@ Full breakdowns: [results/phase-2-layernorm.md](results/phase-2-layernorm.md),
 ### FP16 and BF16 (Phase 8)
 
 Worst case over the shapes in `tests/test_dtypes.cpp`, copied from
-`ccml_test_dtypes` output: **local RTX 3050 A Laptop (sm_89), 2026-11-17.** The
-Tesla T4 (sm_75) run is recorded in
-[results/phase-8-multi-dtype.md](results/phase-8-multi-dtype.md).
+`ccml_test_dtypes` output: local RTX 3050 A Laptop (sm_89), 2026-11-17. **The
+Tesla T4 (sm_75) produced identical figures**
+([results/phase-8-multi-dtype.md](results/phase-8-multi-dtype.md)).
 
 | Operator | dtype | Shapes | worst max_rel (typical outputs) | Bound (rel_tol) | Verdict |
 |---|---|---|---|---|---|

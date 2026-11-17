@@ -31,7 +31,7 @@ Status key: ✅ compliant · 🟡 partial · ❌ missing · ⚠️ contradicts s
 | 12 | Matmul ladder: naive → smem tiling → register blocking → float4 → double buffering → Tensor Cores (WMMA or mma.sync); speedup recorded per step | R§3 | 🟡 | 2 of 6 rungs on `dev`; register blocking and float4 done on `matmul-ladder` (T4 numbers pending) |
 | 13 | Layernorm: block- or warp-per-row, Welford or two-pass, warp shuffle, vectorized, optional residual/bias fusion | R§3 | 🟡 | Two-pass block-per-row only |
 | 14 | Softmax: stable, online, warp-per-row short / block-per-row long, optional fused scale/mask | R§3 | 🟡 | Block-per-row three-pass only |
-| 15 | Correctness vs PyTorch **float64** with explicit tolerances for **FP32, FP16, BF16** | R§3, R§9 | ❌ | FP32 only (conflicting docs removed) |
+| 15 | Correctness vs PyTorch **float64** with explicit tolerances for **FP32, FP16, BF16** | R§3, R§9 | ✅ | All operators, all three dtypes, two fp64 references, per-dtype tolerance table; T4 verified ([phase 8](results/phase-8-multi-dtype.md)). BF16 Tensor Core kernels follow in Phase 11 |
 | 16 | Benchmark harness: CSV, TFLOPS, GB/s | R§3 | ✅ | `bench/`, `scripts/bench_torch.py`; one CSV schema (docs/benchmarking.md) |
 | 17 | PyTorch extension via **`torch.utils.cpp_extension`**, droppable into a model | R§3, R§9 | ❌ | ctypes binding only (conflicting docs removed) |
 | 18 | Experiments: tile sweep, shape sweep (+odd shapes), dtype comparison, occupancy vs registers, vectorized vs scalar, fusion vs separate, end-to-end model latency | R§5 | ❌ | None run as sweeps |
