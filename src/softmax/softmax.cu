@@ -46,13 +46,17 @@ ccml_status launch_wpr(T* y, const T* x, int rows, int cols, cudaStream_t stream
 
 template <typename T, int kV>
 ccml_status launch_wpr_chunks(T* y, const T* x, int rows, int cols, cudaStream_t stream) {
+  /* cols <= 1024, so at most 1024 / (32 kV) chunks per lane: larger buckets
+     are never instantiated (they would only be dead, spilling code). */
+  constexpr int kMax = 1024 / (32 * kV);
   const int chunks = (cols / kV + 31) / 32;
   if (chunks <= 1) return launch_wpr<T, kV, 1>(y, x, rows, cols, stream);
-  if (chunks <= 2) return launch_wpr<T, kV, 2>(y, x, rows, cols, stream);
-  if (chunks <= 4) return launch_wpr<T, kV, 4>(y, x, rows, cols, stream);
-  if (chunks <= 8) return launch_wpr<T, kV, 8>(y, x, rows, cols, stream);
-  if (chunks <= 16) return launch_wpr<T, kV, 16>(y, x, rows, cols, stream);
-  return launch_wpr<T, kV, 32>(y, x, rows, cols, stream);
+  if constexpr (kMax >= 2) if (chunks <= 2) return launch_wpr<T, kV, 2>(y, x, rows, cols, stream);
+  if constexpr (kMax >= 4) if (chunks <= 4) return launch_wpr<T, kV, 4>(y, x, rows, cols, stream);
+  if constexpr (kMax >= 8) if (chunks <= 8) return launch_wpr<T, kV, 8>(y, x, rows, cols, stream);
+  if constexpr (kMax >= 16) if (chunks <= 16) return launch_wpr<T, kV, 16>(y, x, rows, cols, stream);
+  if constexpr (kMax >= 32) return launch_wpr<T, kV, 32>(y, x, rows, cols, stream);
+  return CCML_ERROR_UNSUPPORTED_SHAPE; /* unreachable: cols <= 1024 is checked first */
 }
 
 template <typename T>
@@ -185,13 +189,17 @@ ccml_status launch_mwpr(T* y, const T* x, int rows, int cols,
 template <typename T, int kV>
 ccml_status launch_mwpr_chunks(T* y, const T* x, int rows, int cols,
                                const ccml::kernels::SoftmaxMask& m, cudaStream_t stream) {
+  /* cols <= 1024, so at most 1024 / (32 kV) chunks per lane: larger buckets
+     are never instantiated (they would only be dead, spilling code). */
+  constexpr int kMax = 1024 / (32 * kV);
   const int chunks = (cols / kV + 31) / 32;
   if (chunks <= 1) return launch_mwpr<T, kV, 1>(y, x, rows, cols, m, stream);
-  if (chunks <= 2) return launch_mwpr<T, kV, 2>(y, x, rows, cols, m, stream);
-  if (chunks <= 4) return launch_mwpr<T, kV, 4>(y, x, rows, cols, m, stream);
-  if (chunks <= 8) return launch_mwpr<T, kV, 8>(y, x, rows, cols, m, stream);
-  if (chunks <= 16) return launch_mwpr<T, kV, 16>(y, x, rows, cols, m, stream);
-  return launch_mwpr<T, kV, 32>(y, x, rows, cols, m, stream);
+  if constexpr (kMax >= 2) if (chunks <= 2) return launch_mwpr<T, kV, 2>(y, x, rows, cols, m, stream);
+  if constexpr (kMax >= 4) if (chunks <= 4) return launch_mwpr<T, kV, 4>(y, x, rows, cols, m, stream);
+  if constexpr (kMax >= 8) if (chunks <= 8) return launch_mwpr<T, kV, 8>(y, x, rows, cols, m, stream);
+  if constexpr (kMax >= 16) if (chunks <= 16) return launch_mwpr<T, kV, 16>(y, x, rows, cols, m, stream);
+  if constexpr (kMax >= 32) return launch_mwpr<T, kV, 32>(y, x, rows, cols, m, stream);
+  return CCML_ERROR_UNSUPPORTED_SHAPE; /* unreachable: cols <= 1024 is checked first */
 }
 
 template <typename Public>
