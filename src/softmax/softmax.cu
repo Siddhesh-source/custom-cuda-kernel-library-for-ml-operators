@@ -70,6 +70,56 @@ ccml_status launch_warp_per_row(T* y, const T* x, int rows, int cols, cudaStream
              : launch_wpr_chunks<T, 1>(y, x, rows, cols, stream);
 }
 
+/* Split row (entry 15): S segments per row so that rows x S >= 2 x SMs, each
+   segment at least kMinSegment columns. S = 1 runs ONLINE (no workspace). */
+constexpr int kMinSegment = 2048;
+
+int sm_count() {
+  static const int count = [] {
+    int device = 0, n = 0;
+    if (cudaGetDevice(&device) != cudaSuccess ||
+        cudaDeviceGetAttribute(&n, cudaDevAttrMultiProcessorCount, device) != cudaSuccess) {
+      (void)cudaGetLastError();
+      return 1;
+    }
+    return n;
+  }();
+  return count;
+}
+
+template <typename T>
+ccml_status launch_split_row(T* y, const T* x, int rows, int cols, cudaStream_t stream) {
+  int segments = (2 * sm_count() + rows - 1) / rows;
+  const int max_segments = cols / kMinSegment > 1 ? cols / kMinSegment : 1;
+  if (segments > max_segments) segments = max_segments;
+  if (segments <= 1) {
+    const ccml::detail::LaunchConfig config = ccml::detail::rowwise_launch_config(
+        rows, cols, ccml::kernels::kSoftmaxBlockSize);
+    CCML_LAUNCH(ccml::kernels::softmax_online<T>, config, stream, y, x, rows, cols);
+    return CCML_SUCCESS;
+  }
+  const int seg = (cols + segments - 1) / segments;
+  segments = (cols + seg - 1) / seg;
+  const std::size_t bytes =
+      static_cast<std::size_t>(rows) * segments * sizeof(ccml::kernels::OnlineMaxSum);
+  void* workspace = nullptr;
+  CCML_CUDA_TRY(cudaMallocAsync(&workspace, bytes, stream));
+  auto* partial = static_cast<ccml::kernels::OnlineMaxSum*>(workspace);
+  /* Every launch returns through this lambda, so the workspace is always freed. */
+  const ccml_status run = [&]() -> ccml_status {
+    ccml::detail::LaunchConfig config;
+    config.block = dim3(static_cast<unsigned>(ccml::kernels::kSoftmaxBlockSize), 1, 1);
+    config.grid = dim3(static_cast<unsigned>(segments), static_cast<unsigned>(rows), 1);
+    CCML_LAUNCH(ccml::kernels::softmax_split_stats<T>, config, stream, partial, x, rows, cols,
+                seg);
+    CCML_LAUNCH(ccml::kernels::softmax_split_write<T>, config, stream, y, partial, x, rows,
+                cols, seg);
+    return CCML_SUCCESS;
+  }();
+  CCML_CUDA_TRY(cudaFreeAsync(workspace, stream));
+  return run;
+}
+
 /* One implementation for every storage type; the public entry points below are
    thin instantiations of it. */
 template <typename Public>
@@ -108,6 +158,9 @@ ccml_status softmax(Public* y_pub, const Public* x_pub, int rows, int cols,
     case CCML_SOFTMAX_WARP_PER_ROW:
       return launch_warp_per_row(y, x, rows, cols, stream, fn_name<Public>());
 
+    case CCML_SOFTMAX_SPLIT_ROW:
+      return launch_split_row(y, x, rows, cols, stream);
+
     default:
       ccml::detail::set_last_error((fn_name<Public>() + ": unknown algorithm").c_str());
       return CCML_ERROR_INVALID_ARGUMENT;
@@ -124,6 +177,7 @@ const char* ccml_softmax_algo_name(ccml_softmax_algo algo) {
     case CCML_SOFTMAX_BLOCK_PER_ROW: return "block_per_row";
     case CCML_SOFTMAX_WARP_PER_ROW:  return "warp_per_row";
     case CCML_SOFTMAX_ONLINE:        return "online";
+    case CCML_SOFTMAX_SPLIT_ROW:     return "split_row";
   }
   return "unknown";
 }

@@ -297,6 +297,53 @@ softmax_warp_per_row(T* y, const T* x, int rows, int cols) {
   }
 }
 
+/* --------------------------------------------------------- split row ---
+ *
+ * docs/optimization-log.md entry 15. Row r is cut into gridDim.x segments of
+ * `seg` columns. Kernel 1 writes each segment's (max, sum) to
+ * partial[r * S + s]; kernel 2 merges the S pairs of its row in fixed order
+ * (deterministic) and writes its segment. The NaN / -inf policy is ONLINE's.
+ */
+template <typename T>
+__global__ void softmax_split_stats(OnlineMaxSum* partial, const T* x, int rows, int cols,
+                                    int seg) {
+  using ccml::detail::to_float;
+  const int row = static_cast<int>(blockIdx.y);
+  const int s = static_cast<int>(blockIdx.x);
+  if (row >= rows) return;
+  __shared__ OnlineMaxSum scratch[32];
+  const T* row_in = x + static_cast<long long>(row) * cols;
+  const int begin = s * seg;
+  const int end = min(cols, begin + seg);
+  OnlineMaxSum st{-INFINITY, 0.0f};
+  for (int c = begin + static_cast<int>(threadIdx.x); c < end; c += static_cast<int>(blockDim.x)) {
+    online_add(st, to_float(row_in[c]));
+  }
+  st = online_block_reduce(st, scratch);
+  if (threadIdx.x == 0) partial[static_cast<long long>(row) * gridDim.x + s] = st;
+}
+
+template <typename T>
+__global__ void softmax_split_write(T* y, const OnlineMaxSum* partial, const T* x, int rows,
+                                    int cols, int seg) {
+  using ccml::detail::to_float;
+  const int row = static_cast<int>(blockIdx.y);
+  const int s = static_cast<int>(blockIdx.x);
+  if (row >= rows) return;
+  /* Every thread merges the row's S pairs in the same fixed order: S is small
+     (<= a few dozen) and the pairs are an L2-resident broadcast. */
+  const OnlineMaxSum* p = partial + static_cast<long long>(row) * gridDim.x;
+  OnlineMaxSum st = p[0];
+  for (unsigned i = 1; i < gridDim.x; ++i) st = online_merge(st, p[i]);
+  const float inv = 1.0f / st.s;
+  const long long base = static_cast<long long>(row) * cols;
+  const int begin = s * seg;
+  const int end = min(cols, begin + seg);
+  for (int c = begin + static_cast<int>(threadIdx.x); c < end; c += static_cast<int>(blockDim.x)) {
+    y[base + c] = ccml::detail::from_float<T>(expf(to_float(x[base + c]) - st.m) * inv);
+  }
+}
+
 }  // namespace kernels
 }  // namespace ccml
 

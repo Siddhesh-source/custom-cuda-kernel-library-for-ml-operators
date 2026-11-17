@@ -29,7 +29,7 @@ namespace {
 
 /* Every variant the bench times. */
 const ccml_softmax_algo kAlgos[] = {CCML_SOFTMAX_BLOCK_PER_ROW, CCML_SOFTMAX_ONLINE,
-                                    CCML_SOFTMAX_WARP_PER_ROW};
+                                    CCML_SOFTMAX_WARP_PER_ROW, CCML_SOFTMAX_SPLIT_ROW};
 
 ccml_status run(float* y, const float* x, int r, int c, ccml_softmax_algo a, cudaStream_t s) {
   return ccml_softmax_f32(y, x, r, c, a, s);

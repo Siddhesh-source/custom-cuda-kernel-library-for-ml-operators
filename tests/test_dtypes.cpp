@@ -280,7 +280,7 @@ void check_softmax(const ccml_test::Context& ctx, int rows, int cols, float scal
 const int kMatmulShapes[][3] = {{1, 1, 1}, {17, 33, 65}, {128, 128, 128},
                                 {64, 257, 1023}, {3, 768, 768}, {256, 96, 2048}};
 const ccml_softmax_algo kSoftmaxAlgos[] = {CCML_SOFTMAX_BLOCK_PER_ROW, CCML_SOFTMAX_ONLINE,
-                                          CCML_SOFTMAX_WARP_PER_ROW};
+                                          CCML_SOFTMAX_WARP_PER_ROW, CCML_SOFTMAX_SPLIT_ROW};
 const ccml_layernorm_algo kLayerNormAlgos[] = {CCML_LAYERNORM_TWO_PASS,
                                                 CCML_LAYERNORM_WELFORD,
                                                 CCML_LAYERNORM_WARP_PER_ROW,

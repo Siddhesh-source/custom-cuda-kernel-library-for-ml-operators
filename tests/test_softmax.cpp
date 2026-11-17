@@ -1,4 +1,5 @@
 #include <cmath>
+#include <cstring>
 #include <limits>
 #include <cstdint>
 #include <cstdio>
@@ -316,7 +317,7 @@ CCML_TEST(softmax, rejects_null_and_nonpositive_dimensions) {
 /* ------------------------------------------- every algorithm, every case --- */
 
 const ccml_softmax_algo kAlgos[] = {CCML_SOFTMAX_BLOCK_PER_ROW, CCML_SOFTMAX_ONLINE,
-                                    CCML_SOFTMAX_WARP_PER_ROW};
+                                    CCML_SOFTMAX_WARP_PER_ROW, CCML_SOFTMAX_SPLIT_ROW};
 
 bool supported(ccml_softmax_algo algo, int cols) {
   return !(algo == CCML_SOFTMAX_WARP_PER_ROW && cols > 1024);
@@ -426,4 +427,43 @@ CCML_TEST(softmax, warp_per_row_buckets_and_paths) {
   ctx.check(ccml_softmax_f32(&dummy, &dummy, 1, 1025, CCML_SOFTMAX_WARP_PER_ROW, nullptr) ==
                 CCML_ERROR_UNSUPPORTED_SHAPE,
             "cols = 1025 refused with UNSUPPORTED_SHAPE, never truncated");
+}
+
+/* SPLIT_ROW on rows long enough to be split, with segment boundaries in
+   awkward places; -inf everywhere except one segment; an all -inf row across
+   segments; a NaN in one segment; bitwise determinism over repeated runs. */
+CCML_TEST(softmax, split_row_long_rows_and_policy) {
+  double worst = 0.0;
+  for (const Shape& s : {Shape{1, 4096}, Shape{1, 30522}, Shape{3, 50257}, Shape{16, 32000},
+                         Shape{2, 6143}, Shape{1, 100003}}) {
+    worst = std::fmax(worst, run_case(ctx, s, InputOptions{}, 1500 + s.cols,
+                                      CCML_SOFTMAX_SPLIT_ROW).max_normalized_error);
+  }
+  ctx.note("worst normalized error " + std::to_string(worst));
+
+  const float inf = std::numeric_limits<float>::infinity();
+  const int cols = 40000;
+  std::vector<float> hx(static_cast<std::size_t>(3) * cols, -inf);
+  for (int c = 30000; c < 30100; ++c) hx[static_cast<std::size_t>(c)] = 2.0f;  /* row 0 */
+  /* row 1: entirely -inf */
+  for (int c = 0; c < cols; ++c) hx[static_cast<std::size_t>(2 * cols + c)] = 0.0f;
+  hx[static_cast<std::size_t>(2 * cols + 39999)] = std::numeric_limits<float>::quiet_NaN();
+  const std::vector<float> got = run_softmax(ctx, hx, Shape{3, cols}, CCML_SOFTMAX_SPLIT_ROW);
+  for (int c = 0; c < cols; ++c) {
+    const float v0 = got[static_cast<std::size_t>(c)];
+    ctx.check(c >= 30000 && c < 30100 ? std::fabs(v0 - 0.01f) < 1e-7f : v0 == 0.0f,
+              "one live segment among -inf segments");
+    ctx.check(std::isnan(got[static_cast<std::size_t>(cols + c)]), "all -inf row not NaN");
+    ctx.check(std::isnan(got[static_cast<std::size_t>(2 * cols + c)]), "NaN did not poison the row");
+  }
+
+  std::vector<float> hr(static_cast<std::size_t>(16) * 32000);
+  Rng(1600).normal(hr.data(), hr.size(), 0.0f, 3.0f);
+  const std::vector<float> first = run_softmax(ctx, hr, Shape{16, 32000}, CCML_SOFTMAX_SPLIT_ROW);
+  for (int run = 0; run < 5; ++run) {
+    const std::vector<float> again =
+        run_softmax(ctx, hr, Shape{16, 32000}, CCML_SOFTMAX_SPLIT_ROW);
+    ctx.check(std::memcmp(first.data(), again.data(), first.size() * sizeof(float)) == 0,
+              "SPLIT_ROW must be bitwise deterministic");
+  }
 }

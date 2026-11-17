@@ -1808,7 +1808,8 @@ passes.
 
 ## 15. Softmax: a long row split across blocks (`CCML_SOFTMAX_SPLIT_ROW`)
 
-**Status:** hypothesis committed before the code.
+**Status:** implemented and correct (FP32, FP16, BF16). Local sm_89 timings
+below; sm_89 has only 14 SMs, so the 16-row case is tested properly on Kaggle.
 
 ### Hypothesis
 
@@ -1840,3 +1841,42 @@ chosen so that rows x S >= 2 x SMs with segments of at least 2048 elements.
 **What would falsify it:** under 2x at one row, which would mean the second
 kernel and the workspace cost as much as the parallelism wins at these
 sizes (a 50257-element FP32 row is only 200 KB).
+
+### Change
+
+- `softmax_split_stats<T>` and `softmax_split_write<T>` in
+  `src/softmax/softmax_kernels.cuh`; `launch_split_row` in `softmax.cu`
+  (S = min(ceil(2 x SMs / rows), cols / 2048); S = 1 runs ONLINE; workspace
+  from `cudaMallocAsync`, freed on every path).
+- Tests: `softmax.split_row_long_rows_and_policy` (6 long shapes up to
+  1 x 100003; a row live in one segment among -inf segments; an all -inf row
+  across segments; a NaN in the last segment; bitwise determinism over 5
+  repeats); SPLIT_ROW joins every shared case and the FP16/BF16 tests. Worst
+  normalized error 0.184 (shared cases), 0.0067 (long rows).
+
+### Evidence
+
+**Timings, local sm_89 (indicative), median of 200**
+(`results/sm_89/softmax_split_row.csv`; ratio = ONLINE / SPLIT_ROW):
+
+| Shape | f32 warm | f32 cold | f16 warm | f16 cold |
+|---|---|---|---|---|
+| 1 x 50257 | 45.1 -> **12.3 us (3.67x)** | 74.8 -> 17.4 (4.29x) | 61.4 -> 12.3 (5.00x) | 90.2 -> 15.4 (5.87x) |
+| 1 x 32000 | 30.7 -> 11.3 (2.73x) | 50.1 -> 13.3 (3.76x) | 33.8 -> 11.3 (3.00x) | 52.2 -> 13.3 (3.92x) |
+| 1 x 30522 | 34.8 -> 12.3 (2.83x) | 51.2 -> 15.4 (3.33x) | 31.7 -> 10.2 (3.10x) | 51.2 -> 13.3 (3.85x) |
+| 16 x 50257 | 50.2 -> 38.9 (1.29x) | 110 -> 96.2 (1.14x) | 65.6 -> 38.9 (1.69x) | 110 -> 72.7 (1.51x) |
+| 16 x 32000 | 32.8 -> 26.6 (1.23x) | 63.5 -> 53.3 (1.19x) | 43.0 -> 27.7 (1.56x) | 70.7 -> 46.1 (1.53x) |
+| 128 x 32000 | 326 -> 327 (1.00x) | 388 -> 388 (1.00x) | 94.2 -> 94.2 (1.00x) | 192 -> 191 (1.00x) |
+
+### Verdict
+
+**Kept**; Kaggle decides the 16-row case.
+
+1. One row at least 4x: **met for 50257 and for every cold case (3.3-5.9x);
+   missed warm at 30522-32000 (2.7-3.1x)**, where 12-13 us is now mostly the
+   two launches and the merge (one row is 120-200 KB).
+2. 16 rows at least 2x: **missed on sm_89 (1.2-1.7x)**: with 14 SMs the
+   heuristic picks only 2 segments per row (28 blocks). On the T4 (40 SMs) it
+   picks 5, which is the configuration the prediction was about.
+   128 rows: no change and no loss (S = 1 runs ONLINE): **met.**
+3. Correct, policy and determinism: **met.**
