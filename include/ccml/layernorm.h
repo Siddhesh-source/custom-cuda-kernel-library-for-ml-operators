@@ -51,6 +51,30 @@ CCML_API ccml_status ccml_layernorm_f32(float*       y,
                                         ccml_layernorm_algo algo,
                                         cudaStream_t stream);
 
+/* FP16 and BF16 storage, same contract as ccml_layernorm_f32. x, y, gamma and
+   beta all use the one storage type (as torch.nn.functional.layer_norm
+   requires); eps stays float. Reductions are in double exactly as for f32, and
+   y is rounded once on store. */
+CCML_API ccml_status ccml_layernorm_f16(ccml_f16*       y,
+                                        const ccml_f16* x,
+                                        const ccml_f16* gamma,
+                                        const ccml_f16* beta,
+                                        int             rows,
+                                        int             cols,
+                                        float           eps,
+                                        ccml_layernorm_algo algo,
+                                        cudaStream_t    stream);
+
+CCML_API ccml_status ccml_layernorm_bf16(ccml_bf16*       y,
+                                         const ccml_bf16* x,
+                                         const ccml_bf16* gamma,
+                                         const ccml_bf16* beta,
+                                         int              rows,
+                                         int              cols,
+                                         float            eps,
+                                         ccml_layernorm_algo algo,
+                                         cudaStream_t     stream);
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif

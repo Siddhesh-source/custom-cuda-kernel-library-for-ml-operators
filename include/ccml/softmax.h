@@ -34,6 +34,22 @@ CCML_API ccml_status ccml_softmax_f32(float*       y,
                                       ccml_softmax_algo algo,
                                       cudaStream_t stream);
 
+/* FP16 and BF16 storage, same contract as ccml_softmax_f32: max-subtracted,
+   exponentials in float, sum in double, y rounded once on store. */
+CCML_API ccml_status ccml_softmax_f16(ccml_f16*       y,
+                                      const ccml_f16* x,
+                                      int             rows,
+                                      int             cols,
+                                      ccml_softmax_algo algo,
+                                      cudaStream_t    stream);
+
+CCML_API ccml_status ccml_softmax_bf16(ccml_bf16*       y,
+                                       const ccml_bf16* x,
+                                       int              rows,
+                                       int              cols,
+                                       ccml_softmax_algo algo,
+                                       cudaStream_t     stream);
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif

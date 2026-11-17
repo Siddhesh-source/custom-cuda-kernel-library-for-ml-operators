@@ -44,6 +44,29 @@ CCML_API ccml_status ccml_matmul_f32(float*       C,
                                      ccml_matmul_algo algo,
                                      cudaStream_t stream);
 
+/* FP16 and BF16 storage, same contract as ccml_matmul_f32. Inputs are widened
+   to float32, accumulation is float32, and C is rounded once on store, so the
+   result differs from the f32 entry point only by input and output rounding.
+   Both work on every supported architecture (BF16 storage needs no sm_80
+   instructions). */
+CCML_API ccml_status ccml_matmul_f16(ccml_f16*       C,
+                                     const ccml_f16* A,
+                                     const ccml_f16* B,
+                                     int             M,
+                                     int             N,
+                                     int             K,
+                                     ccml_matmul_algo algo,
+                                     cudaStream_t     stream);
+
+CCML_API ccml_status ccml_matmul_bf16(ccml_bf16*       C,
+                                      const ccml_bf16* A,
+                                      const ccml_bf16* B,
+                                      int              M,
+                                      int              N,
+                                      int              K,
+                                      ccml_matmul_algo algo,
+                                      cudaStream_t     stream);
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif

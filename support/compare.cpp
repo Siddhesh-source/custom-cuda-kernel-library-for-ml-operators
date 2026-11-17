@@ -33,6 +33,21 @@ Tolerance tolerance_for_f32_reduction(int terms) {
   return tolerance;
 }
 
+Tolerance tolerance_for_softmax_f32(int cols) {
+  Tolerance tolerance;
+  tolerance.abs_tol = 1.1754943508222875e-38;  /* FLT_MIN */
+  tolerance.rel_tol = tolerance_for_f32_reduction(cols).rel_tol;
+  return tolerance;
+}
+
+Tolerance widen_for_storage(const Tolerance& f32, double unit_roundoff,
+                            double abs_floor) {
+  Tolerance tolerance;
+  tolerance.abs_tol = f32.abs_tol + abs_floor;
+  tolerance.rel_tol = f32.rel_tol + 2.0 * unit_roundoff;
+  return tolerance;
+}
+
 Tolerance tolerance_for_f32_dot_product(int terms, double scale) {
   const Tolerance base = tolerance_for_f32_reduction(terms);
 

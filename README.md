@@ -16,6 +16,11 @@ binding.
 All three are validated against two independent references — a double-precision
 CPU oracle and PyTorch — on a Tesla T4.
 
+Every operator also has `_f16` and `_bf16` entry points (FP16/BF16 storage,
+float32 math), validated against the same references with explicit per-dtype
+tolerances ([correctness](docs/correctness.md)). The speed figures above are
+FP32, from the case study.
+
 **Every operator is currently slower than PyTorch**, by 2x to 11x depending on
 shape. Measured, not estimated: see the
 [case study](docs/results/phase-6-case-study.md) and
@@ -112,9 +117,12 @@ should choose. See [python/README.md](python/README.md).
 
 Every operator follows the same shape, so learning one teaches the rest:
 
-    ccml_<operator>_f32(output, inputs..., dimensions..., parameters...,
-                        algo, stream)
+    ccml_<operator>_<f32|f16|bf16>(output, inputs..., dimensions..., parameters...,
+                                   algo, stream)
 
+- **Storage type in the name.** `float*`, `ccml_f16*` or `ccml_bf16*` (16-bit
+  structs laid out exactly like CUDA's `__half` / `__nv_bfloat16`). Math is
+  float32 or wider for every type.
 - **Output first**, then inputs, then shape, then operator parameters.
 - **Row-major, contiguous.** No strides, no transpose flags, no broadcasting.
 - **Device pointers**, never owned by the library.

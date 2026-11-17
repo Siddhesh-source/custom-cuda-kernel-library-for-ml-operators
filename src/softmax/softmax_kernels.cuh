@@ -7,7 +7,9 @@
  *   y[r, c] = exp(x[r, c] - max(x[r, :])) / sum_j exp(x[r, j] - max(x[r, :]))
  *
  * One block per row, three passes over the row: the row maximum, the sum of
- * shifted exponentials, then the normalized write.
+ * shifted exponentials, then the normalized write. Templated on the storage
+ * type T; elements are widened on load and rounded once on store
+ * (common/dtype.cuh).
  *
  * Why the maximum is subtracted
  * -----------------------------
@@ -44,6 +46,7 @@
 
 #include <cuda_runtime.h>
 
+#include "common/dtype.cuh"
 #include "common/reduce.cuh"
 #include "common/util.h"
 
@@ -61,10 +64,12 @@ constexpr int kSoftmaxBlockSize = 256;
  * Rows wider than the block are handled by striding, so any column count works;
  * nothing here assumes cols is a multiple of anything.
  */
-__global__ void softmax_block_per_row_f32(float*       y,
-                                          const float* x,
-                                          int          rows,
-                                          int          cols) {
+template <typename T>
+__global__ void softmax_block_per_row(T*       y,
+                                      const T* x,
+                                      int      rows,
+                                      int      cols) {
+  using ccml::detail::to_float;
   const int row = static_cast<int>(blockIdx.x);
   if (row >= rows) {
     return;  /* uniform across the block, so the barriers below stay safe */
@@ -73,8 +78,8 @@ __global__ void softmax_block_per_row_f32(float*       y,
   /* 64-bit offset: rows * cols overflows int for large tensors even though each
      dimension fits comfortably. */
   const long long base = static_cast<long long>(row) * cols;
-  const float* __restrict__ row_in  = x + base;
-  float* __restrict__       row_out = y + base;
+  const T* __restrict__ row_in  = x + base;
+  T* __restrict__       row_out = y + base;
 
   __shared__ double scratch[ccml::detail::kReduceScratch];
 
@@ -83,7 +88,7 @@ __global__ void softmax_block_per_row_f32(float*       y,
   double thread_max = -DBL_MAX;
   for (int c = static_cast<int>(threadIdx.x); c < cols;
        c += static_cast<int>(blockDim.x)) {
-    const double value = static_cast<double>(row_in[c]);
+    const double value = static_cast<double>(to_float(row_in[c]));
     thread_max = (value > thread_max) ? value : thread_max;
   }
   const double row_max = ccml::detail::block_reduce(
@@ -100,7 +105,7 @@ __global__ void softmax_block_per_row_f32(float*       y,
   double sum = 0.0;
   for (int c = static_cast<int>(threadIdx.x); c < cols;
        c += static_cast<int>(blockDim.x)) {
-    sum += static_cast<double>(expf(row_in[c] - row_max_f));
+    sum += static_cast<double>(expf(to_float(row_in[c]) - row_max_f));
   }
   const double total = ccml::detail::block_reduce_sum(sum, scratch);
 
@@ -110,8 +115,8 @@ __global__ void softmax_block_per_row_f32(float*       y,
   /* Pass 3: normalize and write. */
   for (int c = static_cast<int>(threadIdx.x); c < cols;
        c += static_cast<int>(blockDim.x)) {
-    const double shifted = static_cast<double>(expf(row_in[c] - row_max_f));
-    row_out[c] = static_cast<float>(shifted * inv_total);
+    const double shifted = static_cast<double>(expf(to_float(row_in[c]) - row_max_f));
+    row_out[c] = ccml::detail::from_double<T>(shifted * inv_total);
   }
 }
 

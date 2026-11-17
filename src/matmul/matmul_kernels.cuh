@@ -6,6 +6,10 @@
  *
  *   C[M, N] = A[M, K] * B[K, N], row-major, no transpose, no accumulation.
  *
+ * Templated on the storage type T (float, __half, __nv_bfloat16). Elements are
+ * widened to float on load and the result is rounded to T once, on store
+ * (common/dtype.cuh). The shared-memory tiles hold the widened floats.
+ *
  * Accumulation is in float32, unlike the row-wise operators which accumulate in
  * double. The reason the others need double does not apply here: layer
  * normalization divides by a standard deviation, so an error in the mean is
@@ -17,6 +21,7 @@
 
 #include <cuda_runtime.h>
 
+#include "common/dtype.cuh"
 #include "common/util.h"
 
 namespace ccml {
@@ -38,12 +43,14 @@ constexpr int kMatmulTileDim = 16;
  *   grid  = (div_up(N, kMatmulTileDim), div_up(M, kMatmulTileDim))
  *   block = (kMatmulTileDim, kMatmulTileDim)
  */
-__global__ void matmul_naive_f32(float*       C,
-                                 const float* A,
-                                 const float* B,
-                                 int          M,
-                                 int          N,
-                                 int          K) {
+template <typename T>
+__global__ void matmul_naive(T*       C,
+                             const T* A,
+                             const T* B,
+                             int      M,
+                             int      N,
+                             int      K) {
+  using ccml::detail::to_float;
   const int col = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
   const int row = static_cast<int>(blockIdx.y * blockDim.y + threadIdx.y);
 
@@ -53,10 +60,10 @@ __global__ void matmul_naive_f32(float*       C,
 
   float accumulator = 0.0f;
   for (int k = 0; k < K; ++k) {
-    accumulator += A[static_cast<long long>(row) * K + k] *
-                   B[static_cast<long long>(k) * N + col];
+    accumulator += to_float(A[static_cast<long long>(row) * K + k]) *
+                   to_float(B[static_cast<long long>(k) * N + col]);
   }
-  C[static_cast<long long>(row) * N + col] = accumulator;
+  C[static_cast<long long>(row) * N + col] = ccml::detail::from_float<T>(accumulator);
 }
 
 /*
@@ -78,12 +85,14 @@ __global__ void matmul_naive_f32(float*       C,
  * for it would hang the block. Zeros contribute nothing to the sum, so the
  * result is unaffected.
  */
-__global__ void matmul_tiled_f32(float*       C,
-                                 const float* A,
-                                 const float* B,
-                                 int          M,
-                                 int          N,
-                                 int          K) {
+template <typename T>
+__global__ void matmul_tiled(T*       C,
+                             const T* A,
+                             const T* B,
+                             int      M,
+                             int      N,
+                             int      K) {
+  using ccml::detail::to_float;
   __shared__ float tile_a[kMatmulTileDim][kMatmulTileDim];
   __shared__ float tile_b[kMatmulTileDim][kMatmulTileDim];
 
@@ -101,11 +110,11 @@ __global__ void matmul_tiled_f32(float*       C,
 
     tile_a[local_y][local_x] =
         (row < M && a_col < K)
-            ? A[static_cast<long long>(row) * K + a_col]
+            ? to_float(A[static_cast<long long>(row) * K + a_col])
             : 0.0f;
     tile_b[local_y][local_x] =
         (b_row < K && col < N)
-            ? B[static_cast<long long>(b_row) * N + col]
+            ? to_float(B[static_cast<long long>(b_row) * N + col])
             : 0.0f;
 
     /* Every thread must arrive: the staging above is cooperative. */
@@ -120,7 +129,7 @@ __global__ void matmul_tiled_f32(float*       C,
   }
 
   if (row < M && col < N) {
-    C[static_cast<long long>(row) * N + col] = accumulator;
+    C[static_cast<long long>(row) * N + col] = ccml::detail::from_float<T>(accumulator);
   }
 }
 

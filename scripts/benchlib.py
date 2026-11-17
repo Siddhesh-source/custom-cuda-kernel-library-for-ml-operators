@@ -130,6 +130,11 @@ def tolerance_reduction(terms: int) -> tuple[float, float]:
     return t, t
 
 
+def tolerance_softmax(cols: int) -> tuple[float, float]:
+    """Relative, with an absolute floor at FLT_MIN (support/compare.h)."""
+    return 1.1754943508222875e-38, tolerance_reduction(cols)[1]
+
+
 def tolerance_dot(terms: int, scale: float) -> tuple[float, float]:
     abs_t, rel_t = tolerance_reduction(terms)
     return abs_t * (scale if scale > 0 else 1.0), rel_t
