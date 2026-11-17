@@ -52,7 +52,10 @@ endif()
 # Vendor baselines.
 add_library(ccml_bench_baselines STATIC
   baselines/cublas.cpp
-  baselines/cudnn_softmax.cpp)
+  baselines/cudnn_softmax.cpp
+  baselines/epilogue.cu)
+set_target_properties(ccml_bench_baselines PROPERTIES
+  CUDA_ARCHITECTURES "${CCML_CUDA_ARCHITECTURES}")
 target_include_directories(ccml_bench_baselines PUBLIC ${PROJECT_SOURCE_DIR})
 target_link_libraries(ccml_bench_baselines PUBLIC CUDA::cublas CUDA::cublasLt CUDA::cudart)
 
@@ -79,6 +82,10 @@ foreach(op IN ITEMS matmul layernorm softmax)
   add_executable(ccml_bench_${op} bench_${op}.cpp)
   target_link_libraries(ccml_bench_${op} PRIVATE ccml_bench_support ccml_bench_baselines)
 endforeach()
+
+# Fused linear epilogue (enhancements F1, F4, B2).
+add_executable(ccml_bench_matmul_epilogue bench_matmul_epilogue.cpp)
+target_link_libraries(ccml_bench_matmul_epilogue PRIVATE ccml_bench_support ccml_bench_baselines)
 
 add_executable(ccml_bench_peaks bench_peaks.cu)
 target_link_libraries(ccml_bench_peaks PRIVATE ccml_bench_support)

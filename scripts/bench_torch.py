@@ -5,6 +5,11 @@ schema as the C++ benches (scripts/benchlib.py mirrors bench/support/).
     python scripts/bench_torch.py --out-dir results/sm_75 --peaks results/sm_75/peaks.json
         [--ops matmul,layernorm,softmax] [--impls eager,compile,triton]
         [--filter TEXT] [--cache warm|cold|both] [--compile-mode max-autotune]
+        [--matmul-dtypes f32,f16,bf16]
+
+Matmul in FP16/BF16 runs torch.mm on 16-bit tensors (cuBLAS with Tensor Cores,
+FP32 accumulation); the reference is fp64 of the ROUNDED inputs and the
+tolerance is the f32 one widened for the final rounding, as in the C++ bench.
 
 PyTorch eager matmul is cuBLAS and eager softmax is PyTorch's own CUDA kernel;
 eager layer_norm is the layernorm vendor baseline (cuDNN has no legacy-API
@@ -40,6 +45,10 @@ def context(peaks_path: str | None, tel: bl.Telemetry) -> dict:
         "commit": os.environ.get("CCML_COMMIT", "unknown"),
         "fp32_tflops_theory": peaks.get("fp32_tflops_theory", 0.0),
         "fp32_tflops_measured": peaks.get("fp32_tflops_measured", 0.0),
+        "tc_f16_tflops_theory": peaks.get("tc_f16_tflops_theory", 0.0),
+        "tc_f16_tflops_measured": peaks.get("tc_f16_tflops_measured", 0.0),
+        "tc_bf16_tflops_theory": peaks.get("tc_bf16_tflops_theory", 0.0),
+        "tc_bf16_tflops_measured": peaks.get("tc_bf16_tflops_measured", 0.0),
         "bandwidth_gbps_theory": peaks.get("bandwidth_gbps_theory", 0.0),
         "bandwidth_gbps_measured": peaks.get("bandwidth_gbps_measured", 0.0),
         "l2": getattr(p, "L2_cache_size", 4 << 20),
@@ -51,8 +60,12 @@ def compiled(fn, mode: str):
     return torch.compile(fn, mode=mode, dynamic=False, fullgraph=True)
 
 
-def setup(op: str, shape: dict, impls: list[str], mode: str):
-    """Returns (inputs, fp64 reference, (abs_tol, rel_tol), flops, bytes, cands)."""
+TORCH_DTYPE = {"f32": torch.float32, "f16": torch.float16, "bf16": torch.bfloat16}
+ELEM_BYTES = {"f32": 4, "f16": 2, "bf16": 2}
+
+
+def setup(op: str, shape: dict, impls: list[str], mode: str, dtype: str = "f32"):
+    """Returns (fp64 reference, (abs_tol, rel_tol), flops, bytes, cands)."""
     g = torch.Generator(device="cuda").manual_seed(1234)
     cands: list[bl.Candidate] = []
     triton_mod = None
@@ -64,10 +77,10 @@ def setup(op: str, shape: dict, impls: list[str], mode: str):
 
     if op == "matmul":
         M, N, K = shape["M"], shape["N"], shape["K"]
-        a = torch.randn(M, K, device="cuda", generator=g)
-        b = torch.randn(K, N, device="cuda", generator=g)
-        ref = a.double() @ b.double()
-        tol = bl.tolerance_dot(K, ref.pow(2).mean().sqrt().item())
+        a = torch.randn(M, K, device="cuda", generator=g).to(TORCH_DTYPE[dtype])
+        b = torch.randn(K, N, device="cuda", generator=g).to(TORCH_DTYPE[dtype])
+        ref = a.double() @ b.double()  # fp64 of the rounded inputs
+        tol = bl.widen_for_storage(bl.tolerance_dot(K, ref.pow(2).mean().sqrt().item()), dtype)
         fn = lambda: torch.mm(a, b)  # noqa: E731
         if "eager" in impls:
             cands.append(bl.Candidate("pytorch_eager", "torch.mm", fn))
@@ -77,7 +90,8 @@ def setup(op: str, shape: dict, impls: list[str], mode: str):
         if triton_mod is not None:
             cands.append(bl.Candidate("triton", "tutorial_autotuned",
                                       lambda: triton_mod.matmul(a, b)))
-        return ref, tol, bl.matmul_flops(M, N, K), bl.matmul_bytes(M, N, K, 4), cands
+        return (ref, tol, bl.matmul_flops(M, N, K),
+                bl.matmul_bytes(M, N, K, ELEM_BYTES[dtype]), cands)
 
     rows, cols = shape["rows"], shape["cols"]
     x = torch.randn(rows, cols, device="cuda", generator=g)
@@ -123,7 +137,12 @@ def main() -> int:
     ap.add_argument("--compile-mode", default="max-autotune")
     ap.add_argument("--min-iters", type=int, default=100)
     ap.add_argument("--max-iters", type=int, default=200)
+    ap.add_argument("--matmul-dtypes", default="f32",
+                    help="comma-separated storage types for matmul: f32, f16, bf16")
     args = ap.parse_args()
+    for d in args.matmul_dtypes.split(","):
+        if d not in TORCH_DTYPE:
+            ap.error(f"--matmul-dtypes: unknown dtype {d}")
     if args.min_iters < 100:
         ap.error("--min-iters below 100 violates the measurement method (reference.md)")
     if not torch.cuda.is_available():
@@ -151,15 +170,17 @@ def main() -> int:
                       f"{'NVML' if tel.ok else 'unavailable'}; other compute processes: "
                       f"{tel.other_processes()}\n")
             out.write(bl.CSV_HEADER + "\n")
-            for shape in shapes[op]:
+            dtypes = args.matmul_dtypes.split(",") if op == "matmul" else ["f32"]
+            for shape, dtype in ((s, d) for s in shapes[op] for d in dtypes):
                 if args.filter and args.filter not in shape["tag"]:
                     continue
                 t0 = time.time()
                 try:
-                    ref, tol, flops, nbytes, cands = setup(op, shape, impls, args.compile_mode)
+                    ref, tol, flops, nbytes, cands = setup(op, shape, impls, args.compile_mode,
+                                                           dtype)
                 except Exception:  # noqa: BLE001
-                    print(f"setup failed {op} {shape['tag']}:\n{traceback.format_exc()}",
-                          file=sys.stderr)
+                    print(f"setup failed {op} {shape['tag']} {dtype}:\n"
+                          f"{traceback.format_exc()}", file=sys.stderr)
                     continue
                 gated = []
                 for c in cands:
@@ -191,7 +212,7 @@ def main() -> int:
                             if not m.valid:
                                 print(f"  timing invalid {c.impl} {shape['tag']}: {m.error}",
                                       file=sys.stderr)
-                        out.write(bl.csv_row(op=op, impl=c.impl, algo=c.algo, dtype="f32",
+                        out.write(bl.csv_row(op=op, impl=c.impl, algo=c.algo, dtype=dtype,
                                              shape=shape, cold=cold, gate=gate,
                                              max_abs=mabs, max_rel=mrel, flops=flops,
                                              nbytes=nbytes, measured=m,
@@ -199,7 +220,8 @@ def main() -> int:
                                                   else t),
                                              ctx=ctx) + "\n")
                     out.flush()
-                print(f"done {op} {shape['tag']} ({time.time() - t0:.1f}s)", file=sys.stderr)
+                print(f"done {op} {shape['tag']} {dtype} ({time.time() - t0:.1f}s)",
+                      file=sys.stderr)
                 torch.cuda.empty_cache()
         print(f"wrote {path}", file=sys.stderr)
     return 0

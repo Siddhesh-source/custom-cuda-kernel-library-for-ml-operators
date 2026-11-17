@@ -61,6 +61,15 @@ def test_tolerance_formula_matches_cpp():
     assert abs_d == pytest.approx(3 * abs_t) and rel_d == rel_t
 
 
+def test_widen_for_storage_matches_cpp():
+    base = (1e-4, 2e-5)
+    assert bl.widen_for_storage(base, "f32") == base
+    a, r = bl.widen_for_storage(base, "f16")
+    assert a == pytest.approx(1e-4 + 2 ** -24) and r == pytest.approx(2e-5 + 2 * 2 ** -11)
+    a, r = bl.widen_for_storage(base, "bf16")
+    assert r == pytest.approx(2e-5 + 2 * 2 ** -8)
+
+
 def test_softmax_tolerance_is_relative():
     abs_t, rel_t = bl.tolerance_softmax(32000)
     assert abs_t < 1e-37  # a typical output in a 32000-wide row is ~3e-5
@@ -77,6 +86,17 @@ def _row(gate):
                       gate=gate, max_abs=1e-6, max_rel=1e-6,
                       flops=bl.matmul_flops(64, 64, 64),
                       nbytes=bl.matmul_bytes(64, 64, 64, 4), measured=m, tel={}, ctx=ctx)
+
+
+def test_matmul_peak_follows_dtype():
+    p = {"fp32_tflops_theory": 8.0, "fp32_tflops_measured": 7.0,
+         "tc_f16_tflops_theory": 65.0, "tc_f16_tflops_measured": 40.0}
+    assert bl.matmul_peak_tflops(p, "f32", False) == 8.0
+    assert bl.matmul_peak_tflops(p, "f16", False) == 65.0
+    assert bl.matmul_peak_tflops(p, "f16", True) == 40.0
+    assert bl.matmul_peak_tflops(p, "bf16", True) == 7.0  # no BF16 Tensor Cores
+    p.update(tc_bf16_tflops_theory=65.0, tc_bf16_tflops_measured=39.0)
+    assert bl.matmul_peak_tflops(p, "bf16", True) == 39.0
 
 
 def test_csv_gate_rule_and_column_count():

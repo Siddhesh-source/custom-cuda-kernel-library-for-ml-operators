@@ -68,13 +68,25 @@ run_op() {
     local extra=()
     # The naive matmul is ~20x slower than cuBLAS; above 5 GFLOP per call it
     # adds tens of minutes and no information (rows say NOT_RUN).
-    # Matmul also times every REGISTER_TILED tile configuration (reference.md
-    # section 5: tile and block size sweep).
-    [ "$op" = "matmul" ] && extra=(--naive-max-gflop 5 --tile-sweep)
+    # Matmul also times every tile configuration of the tiled family
+    # (reference.md section 5: tile and block size sweep) and every storage
+    # type (section 5: dtype comparison); CCML_MATMUL_DTYPES narrows the list.
+    # The CUDA-core sweep was measured in Phases 9-10; CCML_MATMUL_SWEEP=both
+    # repeats it.
+    [ "$op" = "matmul" ] && extra=(--naive-max-gflop 5 --tile-sweep
+                                   --sweep "${CCML_MATMUL_SWEEP:-tc}"
+                                   --dtype "${CCML_MATMUL_DTYPES:-f32,f16,bf16}")
     [ "$IMPLS" != "all" ] && extra+=(--impls "$IMPLS")
     "$BIN/ccml_bench_$op" --peaks "$peaks" --out "$RES/$op.csv" "${extra[@]}" \
       2> "$OUT/logs/bench_$op.log"
     echo "exit $?"; tail -3 "$OUT/logs/bench_$op.log"
+    if [ "$op" = "matmul" ] && [ -x "$BIN/ccml_bench_matmul_epilogue" ]; then
+      step "C++ bench: fused matmul epilogue (F1 / B2)"
+      local eimpls=()
+      [ "$IMPLS" != "all" ] && eimpls=(--impls "$IMPLS")
+      "$BIN/ccml_bench_matmul_epilogue" --peaks "$peaks" --out "$RES/matmul_epilogue.csv"         --dtype f16 "${eimpls[@]}" 2> "$OUT/logs/bench_matmul_epilogue.log"
+      echo "exit $?"; tail -3 "$OUT/logs/bench_matmul_epilogue.log"
+    fi
   fi
 
   local py_impls=()
@@ -90,6 +102,7 @@ run_op() {
     step "Python baselines: $op (${py_impls[*]}, compile mode $mode)"
     "$PY" "$SRC/scripts/bench_torch.py" --out-dir "$RES" --peaks "$peaks" --ops "$op" \
       --impls "$(IFS=,; echo "${py_impls[*]}")" --compile-mode "$mode" \
+      --matmul-dtypes "${CCML_MATMUL_DTYPES:-f32,f16,bf16}" \
       2> "$OUT/logs/bench_torch_$op.log"
     echo "exit $?"; tail -5 "$OUT/logs/bench_torch_$op.log"
   fi

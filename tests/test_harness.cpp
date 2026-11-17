@@ -103,6 +103,22 @@ CCML_TEST(harness, compare_uses_absolute_tolerance_near_zero) {
             "an absolute tolerance must admit small deviations from zero");
 }
 
+/* The per-element allowance (for unfused 16-bit pipelines) widens only the
+   elements it is given for, and an empty vector changes nothing. */
+CCML_TEST(harness, compare_per_element_allowance) {
+  const std::vector<double> ref = {1.0, 100.0};
+  const std::vector<float> got = {1.5f, 100.5f};
+  ccml_test::Tolerance tol;
+  tol.abs_tol = 0.1;
+  ctx.check(!ccml_test::within(ccml_test::compare(got, ref, tol)), "strict bound fails");
+  ctx.check(!ccml_test::within(ccml_test::compare(got, ref, tol, std::vector<double>())),
+            "empty allowance changes nothing");
+  ctx.check(!ccml_test::within(ccml_test::compare(got, ref, tol, {0.0, 0.5})),
+            "allowance on element 1 only: element 0 still fails");
+  ctx.check(ccml_test::within(ccml_test::compare(got, ref, tol, {0.4, 0.4})),
+            "0.1 + 0.4 covers both");
+}
+
 CCML_TEST(harness, compare_flags_nonfinite_results) {
   const std::vector<double> reference{1.0, 1.0, 1.0};
   const std::vector<float>  got{1.0f,

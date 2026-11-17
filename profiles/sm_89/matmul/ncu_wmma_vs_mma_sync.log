@@ -1,0 +1,56 @@
+﻿ncu: C:\Program Files\NVIDIA Corporation\Nsight Compute 2026.1.1\ncu.bat
+bench: D:\ccml-tensor-cores\build\local\bin\ccml_bench_matmul.exe
+2026-11-17T11:57:15.1110699+05:30
+
+#### gpt2s.ffn_up.m512
+==PROF== Connected to process 17860 (D:\ccml-tensor-cores\build\local\bin\ccml_bench_matmul.exe)
+# gpu: NVIDIA GeForce RTX 3050 A Laptop GPU (cc 8.9)  driver: 591.66  cuda runtime: 13.1  commit: unknown
+# peaks: fp32 11.128 TFLOPS theoretical, 0.000 measured; bandwidth 128.0 GB/s theoretical, 0.0 measured (0 = not measured)
+# tensor core peaks (16-bit in, fp32 accumulate): f16 22.257 TFLOPS theoretical, 0.000 measured; bf16 22.257 theoretical, 0.000 measured (0 = none on this GPU or not measured)
+# telemetry: NVML; other compute processes on GPU: 22
+op,impl,algo,dtype,tag,M,N,K,rows,cols,cache,iters,median_us,p10_us,p90_us,iqr_us,min_us,ci95_lo_us,ci95_hi_us,batched_mean_us,tflops,gbps,pct_peak_theory,pct_peak_measured,max_abs_err,max_rel_err,gate,sm_clock_mhz,mem_clock_mhz,temp_c,clock_reasons,throttled,gpu,cc,driver,cuda,commit
+==PROF== Profiling "matmul_wmma": 0%....50%....100% - 17 passes
+==PROF== Profiling "matmul_mma_sync": 0%....50%....100% - 17 passes
+matmul,ccml,naive,f16,gpt2s.ffn_up.m512,512,3072,768,0,0,warm,100,4275.09,4270.8,4286.88,4.66406,4269.92,4272.75,4275.62,4291.35,0.56512,2.0235,2.539,,0.04556,0.1709,PASS,2550,8001,62,0x0,0,"NVIDIA GeForce RTX 3050 A Laptop GPU",8.9,591.66,13.1,unknown
+matmul,ccml,tiled,f16,gpt2s.ffn_up.m512,512,3072,768,0,0,warm,100,3260.82,3256.96,3261.81,4.32813,3256.54,3257.46,3261.25,3271.39,0.74089,2.6529,3.329,,0.04556,0.1709,PASS,2550,8001,62,0x0,0,"NVIDIA GeForce RTX 3050 A Laptop GPU",8.9,591.66,13.1,unknown
+matmul,ccml,register_tiled,f16,gpt2s.ffn_up.m512,512,3072,768,0,0,warm,100,673.088,669.126,677.674,4.752,666.304,671.952,674.224,673.25,3.5893,12.852,16.13,,0.04556,0.1709,PASS,2550,8001,62,0x0,0,"NVIDIA GeForce RTX 3050 A Laptop GPU",8.9,591.66,13.1,unknown
+matmul,ccml,vectorized,f16,gpt2s.ffn_up.m512,512,3072,768,0,0,warm,100,490.368,488.96,494.982,4.48798,488.576,490.08,491.328,494.026,4.9267,17.641,22.14,,0.04556,0.1709,PASS,2550,8001,62,0x0,0,"NVIDIA GeForce RTX 3050 A Laptop GPU",8.9,591.66,13.1,unknown
+matmul,ccml,double_buffered,f16,gpt2s.ffn_up.m512,512,3072,768,0,0,warm,100,522.432,521.242,526.566,4.26401,520.448,522.016,523.336,527.532,4.6244,16.559,20.78,,0.04556,0.1709,PASS,2550,8001,62,0x0,0,"NVIDIA GeForce RTX 3050 A Laptop GPU",8.9,591.66,13.1,unknown
+matmul,ccml,wmma,f16,gpt2s.ffn_up.m512,512,3072,768,0,0,warm,100,173.152,172.829,177.414,0.423998,172.352,173.088,173.264,173.438,13.953,49.96,62.69,,0.04556,0.3106,PASS,2550,8001,62,0x0,0,"NVIDIA GeForce RTX 3050 A Laptop GPU",8.9,591.66,13.1,unknown
+matmul,ccml,mma_sync,f16,gpt2s.ffn_up.m512,512,3072,768,0,0,warm,100,152.8,152.32,156.931,0.896007,151.84,152.704,153.008,152.379,15.811,56.615,71.04,,0.04556,0.3106,PASS,2550,8001,62,0x0,0,"NVIDIA GeForce RTX 3050 A Laptop GPU",8.9,591.66,13.1,unknown
+ncu.bat : done matmul gpt2s.ffn_up.m512
+At D:\ccml-tensor-cores\scripts\ncu_matmul.ps1:69 char:3
++   & $ncu @nargs 2>&1 | Out-File -Append -Encoding utf8 $log
++   ~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (done matmul gpt2s.ffn_up.m512:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+==PROF== Disconnected from process 17860
+==PROF== Report: D:\ccml-tensor-cores\profiles\sm_89\matmul\wmma_vs_mma_sync_gpt2s.ffn_up.m512.ncu-rep
+
+#### gpt2s.qkv.m16
+==PROF== Connected to process 25200 (D:\ccml-tensor-cores\build\local\bin\ccml_bench_matmul.exe)
+# gpu: NVIDIA GeForce RTX 3050 A Laptop GPU (cc 8.9)  driver: 591.66  cuda runtime: 13.1  commit: unknown
+# peaks: fp32 11.128 TFLOPS theoretical, 0.000 measured; bandwidth 128.0 GB/s theoretical, 0.0 measured (0 = not measured)
+# tensor core peaks (16-bit in, fp32 accumulate): f16 22.257 TFLOPS theoretical, 0.000 measured; bf16 22.257 theoretical, 0.000 measured (0 = none on this GPU or not measured)
+# telemetry: NVML; other compute processes on GPU: 22
+op,impl,algo,dtype,tag,M,N,K,rows,cols,cache,iters,median_us,p10_us,p90_us,iqr_us,min_us,ci95_lo_us,ci95_hi_us,batched_mean_us,tflops,gbps,pct_peak_theory,pct_peak_measured,max_abs_err,max_rel_err,gate,sm_clock_mhz,mem_clock_mhz,temp_c,clock_reasons,throttled,gpu,cc,driver,cuda,commit
+==PROF== Profiling "matmul_wmma": 0%....50%....100% - 17 passes
+==PROF== Profiling "matmul_mma_sync": 0%....50%....100% - 17 passes
+matmul,ccml,naive,f16,gpt2s.qkv.m16,16,2304,768,0,0,warm,100,131.872,131.325,135.968,3.976,131.008,131.712,132.064,114.302,0.42938,27.582,1.929,,0.0312,0.007088,PASS,2205,7001,55,0x1,0,"NVIDIA GeForce RTX 3050 A Laptop GPU",8.9,591.66,13.1,unknown
+matmul,ccml,tiled,f16,gpt2s.qkv.m16,16,2304,768,0,0,warm,100,102.912,89.5648,103.267,0.360003,89.088,102.88,102.992,89.2374,0.55021,35.343,2.472,,0.0312,0.007088,PASS,2205,7001,55,0x1,0,"NVIDIA GeForce RTX 3050 A Laptop GPU",8.9,591.66,13.1,unknown
+matmul,ccml,register_tiled,f16,gpt2s.qkv.m16,16,2304,768,0,0,warm,100,201.168,174.333,205.606,6.67199,174.048,201.024,201.312,174.478,0.28147,18.081,1.265,,0.0312,0.007088,PASS,2205,7001,55,0x1,0,"NVIDIA GeForce RTX 3050 A Laptop GPU",8.9,591.66,13.1,unknown
+matmul,ccml,vectorized,f16,gpt2s.qkv.m16,16,2304,768,0,0,warm,100,152.384,131.994,156.784,5.39999,131.168,151.984,152.576,131.235,0.37158,23.869,1.67,,0.0312,0.007088,PASS,2205,7001,55,0x1,0,"NVIDIA GeForce RTX 3050 A Laptop GPU",8.9,591.66,13.1,unknown
+matmul,ccml,double_buffered,f16,gpt2s.qkv.m16,16,2304,768,0,0,warm,100,143.04,124.192,143.523,4.36,123.776,142.928,143.136,123.926,0.39586,25.428,1.779,,0.0312,0.007088,PASS,2205,7001,55,0x1,0,"NVIDIA GeForce RTX 3050 A Laptop GPU",8.9,591.66,13.1,unknown
+matmul,ccml,wmma,f16,gpt2s.qkv.m16,16,2304,768,0,0,warm,100,62.896,54.688,63.5616,2.848,53.76,62.72,63.008,53.5475,0.90027,57.83,4.045,,0.0312,0.01322,PASS,2205,7001,55,0x1,0,"NVIDIA GeForce RTX 3050 A Laptop GPU",8.9,591.66,13.1,unknown
+matmul,ccml,mma_sync,f16,gpt2s.qkv.m16,16,2304,768,0,0,warm,100,23.92,20.9856,24.3584,0.887998,20.768,23.792,24.016,24.7853,2.3672,152.06,10.64,,0.0312,0.01322,PASS,2205,7001,55,0x1,0,"NVIDIA GeForce RTX 3050 A Laptop GPU",8.9,591.66,13.1,unknown
+ncu.bat : done matmul gpt2s.qkv.m16
+At D:\ccml-tensor-cores\scripts\ncu_matmul.ps1:69 char:3
++   & $ncu @nargs 2>&1 | Out-File -Append -Encoding utf8 $log
++   ~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (done matmul gpt2s.qkv.m16:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+==PROF== Disconnected from process 25200
+==PROF== Report: D:\ccml-tensor-cores\profiles\sm_89\matmul\wmma_vs_mma_sync_gpt2s.qkv.m16.ncu-rep
+done 2026-11-17T11:57:24.6128709+05:30

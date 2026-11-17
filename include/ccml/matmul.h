@@ -21,7 +21,22 @@ typedef enum ccml_matmul_algo {
   CCML_MATMUL_TILED = 2, /* shared-memory tiled */
   CCML_MATMUL_REGISTER_TILED = 3, /* block tile + per-thread register tile */
   CCML_MATMUL_VECTORIZED = 4,     /* REGISTER_TILED with 128-bit, conflict-free memory access */
-  CCML_MATMUL_DOUBLE_BUFFERED = 5 /* VECTORIZED + two shared buffers, next tile prefetched */
+  CCML_MATMUL_DOUBLE_BUFFERED = 5, /* VECTORIZED + two shared buffers, next tile prefetched */
+  /* Tensor Cores (16-bit input, FP32 accumulate). f16: sm_70+; bf16: sm_80+;
+     f32 and unsupported architectures return CCML_ERROR_NOT_IMPLEMENTED. */
+  CCML_MATMUL_WMMA = 6,           /* nvcuda::wmma 16x16x16 on the double-buffered tiling */
+  CCML_MATMUL_MMA_SYNC = 7,       /* mma.sync m16n8k8 + ldmatrix, swizzled shared tiles (f16: sm_75+) */
+  /* Split-K on the MMA_SYNC main loop, for decode shapes (M <= 16): K is cut
+     into slices so the grid fills the GPU, and FP32 partials are reduced by a
+     second kernel. Takes a temporary workspace from cudaMallocAsync on
+     `stream`. SPLIT_K is deterministic (fixed reduction order);
+     SPLIT_K_ATOMIC accumulates with atomicAdd and is NOT bitwise
+     deterministic between runs. */
+  CCML_MATMUL_SPLIT_K = 8,
+  CCML_MATMUL_SPLIT_K_ATOMIC = 9,
+  /* MMA_SYNC with group-M threadblock rasterization (groups of 8 block-rows),
+     so CTAs resident together share operand panels in L2. */
+  CCML_MATMUL_MMA_SYNC_SWIZZLED = 10
 } ccml_matmul_algo;
 
 CCML_API const char* ccml_matmul_algo_name(ccml_matmul_algo algo);
@@ -69,6 +84,37 @@ CCML_API ccml_status ccml_matmul_bf16(ccml_bf16*       C,
                                       int              K,
                                       ccml_matmul_algo algo,
                                       cudaStream_t     stream);
+
+/* Activation for the fused epilogue. GELU uses the tanh form,
+   0.5 x (1 + tanh(sqrt(2/pi) (x + 0.044715 x^3))), as GPT-2 and cuBLASLt do. */
+typedef enum ccml_activation {
+  CCML_ACT_NONE = 0,
+  CCML_ACT_RELU = 1,
+  CCML_ACT_GELU_TANH = 2
+} ccml_activation;
+
+/*
+ * Fused linear layer: C = act(A * B + bias) + residual, row-major, 16-bit
+ * storage, FP32 accumulation and epilogue, one rounding on store.
+ *
+ *   bias     : [N] or NULL
+ *   residual : [M, N] or NULL (must not alias C)
+ *
+ * algo: CCML_MATMUL_MMA_SYNC (or AUTO) applies the epilogue to the
+ * accumulators; CCML_MATMUL_SPLIT_K applies it in the split-K reduction.
+ * Any other algo, and architectures without the Tensor Core instructions,
+ * return CCML_ERROR_NOT_IMPLEMENTED.
+ */
+CCML_API ccml_status ccml_matmul_epilogue_f16(ccml_f16* C, const ccml_f16* A, const ccml_f16* B,
+                                              const ccml_f16* bias, const ccml_f16* residual,
+                                              int M, int N, int K, ccml_activation act,
+                                              ccml_matmul_algo algo, cudaStream_t stream);
+
+CCML_API ccml_status ccml_matmul_epilogue_bf16(ccml_bf16* C, const ccml_bf16* A,
+                                               const ccml_bf16* B, const ccml_bf16* bias,
+                                               const ccml_bf16* residual, int M, int N, int K,
+                                               ccml_activation act, ccml_matmul_algo algo,
+                                               cudaStream_t stream);
 
 #ifdef __cplusplus
 } /* extern "C" */

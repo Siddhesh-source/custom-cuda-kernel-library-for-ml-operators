@@ -7,7 +7,7 @@ and the other document is wrong. Enhancements (marked **[E]**, detailed in
 [enhancements.md](enhancements.md)) are additive and never displace a
 required item.
 
-Last updated: 2026-11-16. Progress is **phase-gated, not calendar-based**: each phase runs from its prompt in [`prompt.md`](../prompt.md), and the next starts only when the current one meets its ACCEPT checks. The phase order follows the deliverable sequence of [R§8].
+Last updated: 2026-11-17. Progress is **phase-gated, not calendar-based**: each phase runs from its prompt in [`prompt.md`](../prompt.md), and the next starts only when the current one meets its ACCEPT checks. The phase order follows the deliverable sequence of [R§8].
 
 ---
 
@@ -28,16 +28,16 @@ Status key: ✅ compliant · 🟡 partial · ❌ missing · ⚠️ contradicts s
 | 9 | Percent of hardware peak (TFLOPS, GB/s) | Method, R§6 | ✅ | TFLOPS / GB/s and % of theoretical and measured peak in every row |
 | 10 | Nsight Systems timelines, Nsight Compute metrics per major optimization | Method, R§9 | ❌ | Never run |
 | 11 | `CUDA_CHECK` on every call, `cudaGetLastError` on every launch | Method | ✅ | `src/common/check.h` — re-verify for each new kernel |
-| 12 | Matmul ladder: naive → smem tiling → register blocking → float4 → double buffering → Tensor Cores (WMMA or mma.sync); speedup recorded per step | R§3 | 🟡 | 5 of 6 rungs: naive, smem tiled, register blocking, float4/vectorized, double buffering, each with its speedup and NCU evidence ([phases 9-10](results/phase-9-10-matmul-ladder.md)). Tensor Cores: Phase 11 |
+| 12 | Matmul ladder: naive → smem tiling → register blocking → float4 → double buffering → Tensor Cores (WMMA or mma.sync); speedup recorded per step | R§3 | ✅ | All 6 rungs, each with its speedup and NCU evidence: naive … double buffering ([phases 9-10](results/phase-9-10-matmul-ladder.md)); Tensor Cores: WMMA (2.83x over double buffering, T4 FP16 large-shape median) and mma.sync m16n8k8 + ldmatrix (1.53x over WMMA) ([phase 11](results/phase-11-tensor-cores.md)). BF16 Tensor Cores verified locally on sm_89 (docs/local.md L1); SKIP on the T4 |
 | 13 | Layernorm: block- or warp-per-row, Welford or two-pass, warp shuffle, vectorized, optional residual/bias fusion | R§3 | 🟡 | Two-pass block-per-row only |
 | 14 | Softmax: stable, online, warp-per-row short / block-per-row long, optional fused scale/mask | R§3 | 🟡 | Block-per-row three-pass only |
 | 15 | Correctness vs PyTorch **float64** with explicit tolerances for **FP32, FP16, BF16** | R§3, R§9 | ✅ | All operators, all three dtypes, two fp64 references, per-dtype tolerance table; T4 verified ([phase 8](results/phase-8-multi-dtype.md)). BF16 Tensor Core kernels follow in Phase 11 |
 | 16 | Benchmark harness: CSV, TFLOPS, GB/s | R§3 | ✅ | `bench/`, `scripts/bench_torch.py`; one CSV schema (docs/benchmarking.md) |
 | 17 | PyTorch extension via **`torch.utils.cpp_extension`**, droppable into a model | R§3, R§9 | ❌ | ctypes binding only (conflicting docs removed) |
-| 18 | Experiments: tile sweep, shape sweep (+odd shapes), dtype comparison, occupancy vs registers, vectorized vs scalar, fusion vs separate, end-to-end model latency | R§5 | 🟡 | Done for matmul: tile sweep (16 configs x 76 shapes), shape sweep incl. odd, occupancy vs registers (NCU, entry 2), vectorized vs scalar (entry 2). Remaining: dtype comparison, fusion vs separate, end-to-end latency |
+| 18 | Experiments: tile sweep, shape sweep (+odd shapes), dtype comparison, occupancy vs registers, vectorized vs scalar, fusion vs separate, end-to-end model latency | R§5 | 🟡 | Done for matmul: tile sweep (CUDA-core 16 configs; Tensor Core 3 configs x 4 variants), shape sweep incl. odd, occupancy vs registers (NCU, entries 2, 4, 5), vectorized vs scalar (entry 2), **dtype comparison** (FP32 / FP16 / BF16 on 76 shapes, [phase 11](results/phase-11-tensor-cores.md)), **fusion vs separate** (fused epilogue vs ours + separate, cuBLAS + separate, cuBLASLt epilogue, phase 11). Remaining: layernorm/softmax fusion (phases 12-13), end-to-end latency (phase 14) |
 | 19 | Roofline plots | R§10 | ❌ | — |
 | 20 | Technical report + demo notebook | R§10 | ❌ | — |
-| 21 | ≥1 operator beats vendor on a target shape, or documented why not | R§9 | ✅ | matmul beats cuBLAS on 2 target shapes on the T4 with the vendor at a higher clock (1.15x, 1.07x) ([phases 9-10](results/phase-9-10-matmul-ladder.md)). Phase 7 baseline was: ours vs best baseline median 0.17x (matmul), 0.31x (layernorm), 0.23x (softmax); only 2 tiny odd matmul shapes faster |
+| 21 | ≥1 operator beats vendor on a target shape, or documented why not | R§9 | ✅ | Matmul FP16 beats cuBLAS on **19 target decode shapes** on the T4 (M ≤ 16, non-overlapping 95% CIs, same or clock-normalized clocks; up to 1.69x, llama1b FFN-down M = 1) with Tensor Cores + split-K; fused epilogue beats cuBLAS + separate kernel at decode sizes (median 1.23x). Losses reported: FP16 large shapes 0.61x of cuBLAS (median) ([phase 11](results/phase-11-tensor-cores.md)). Phase 9-10: 2 FP32 target-shape wins |
 | 22 | Kernel library with build system | R§10 | ✅ | CMake, presets, `find_package` |
 | 23 | Never report speed for a kernel failing tests | R§11 | ✅ | Enforced in code: a non-PASS row carries no timing (tested). It caught a real bug in our Triton baseline |
 

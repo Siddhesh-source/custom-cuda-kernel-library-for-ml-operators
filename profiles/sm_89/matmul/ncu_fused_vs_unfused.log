@@ -1,0 +1,52 @@
+﻿ncu: C:\Program Files\NVIDIA Corporation\Nsight Compute 2026.1.1\ncu.bat
+bench: D:\ccml-tensor-cores\build\local\bin\ccml_bench_matmul_epilogue.exe
+2026-11-17T12:30:54.1765181+05:30
+
+#### gpt2s.ffn_up.m2048
+==PROF== Connected to process 27672 (D:\ccml-tensor-cores\build\local\bin\ccml_bench_matmul_epilogue.exe)
+# gpu: NVIDIA GeForce RTX 3050 A Laptop GPU (cc 8.9)  driver: 591.66  cuda runtime: 13.1  commit: unknown
+# peaks: fp32 11.128 TFLOPS theoretical, 0.000 measured; bandwidth 128.0 GB/s theoretical, 0.0 measured (0 = not measured)
+# tensor core peaks (16-bit in, fp32 accumulate): f16 22.257 TFLOPS theoretical, 0.000 measured; bf16 22.257 theoretical, 0.000 measured (0 = none on this GPU or not measured)
+# telemetry: NVML; other compute processes on GPU: 23
+op,impl,algo,dtype,tag,M,N,K,rows,cols,cache,iters,median_us,p10_us,p90_us,iqr_us,min_us,ci95_lo_us,ci95_hi_us,batched_mean_us,tflops,gbps,pct_peak_theory,pct_peak_measured,max_abs_err,max_rel_err,gate,sm_clock_mhz,mem_clock_mhz,temp_c,clock_reasons,throttled,gpu,cc,driver,cuda,commit
+==PROF== Profiling "matmul_mma_sync_epilogue": 0%....50%....100% - 18 passes
+==PROF== Profiling "matmul_mma_sync_epilogue": 0%....50%....100% - 18 passes
+==PROF== Profiling "matmul_mma_sync": 0%....50%....100% - 18 passes
+matmul_epilogue,ccml,fused_mma_sync,f16,gpt2s.ffn_up.m2048,2048,3072,768,0,0,warm,100,606.032,604.541,635.664,28.288,603.552,605.76,606.64,637.944,15.946,33.75,71.65,,0.0626,5.084,PASS,2565,7001,49,0x0,0,"NVIDIA GeForce RTX 3050 A Laptop GPU",8.9,591.66,13.1,unknown
+matmul_epilogue,ccml,fused_split_k,f16,gpt2s.ffn_up.m2048,2048,3072,768,0,0,warm,100,606.944,604.285,635.482,11.176,603.232,605.824,608.064,663.465,15.922,33.699,71.54,,0.0626,5.084,PASS,2550,7001,59,0x0,0,"NVIDIA GeForce RTX 3050 A Laptop GPU",8.9,591.66,13.1,unknown
+matmul_epilogue,ccml,mma_sync+separate,f16,gpt2s.ffn_up.m2048,2048,3072,768,0,0,warm,100,771.104,767.552,798.835,12.352,760.608,770.464,771.808,787.12,12.532,26.525,56.31,,0.09378,1.756,PASS,2550,7001,59,0x0,0,"NVIDIA GeForce RTX 3050 A Laptop GPU",8.9,591.66,13.1,unknown
+matmul_epilogue,ccml,split_k+separate,f16,gpt2s.ffn_up.m2048,2048,3072,768,0,0,warm,100,768.512,766.301,776.074,3.84001,764.512,767.552,769.376,785.567,12.575,26.614,56.5,,0.09378,1.756,PASS,2550,7001,59,0x0,0,"NVIDIA GeForce RTX 3050 A Laptop GPU",8.9,591.66,13.1,unknown
+ncu.bat : done matmul_epilogue gpt2s.ffn_up.m2048
+At D:\ccml-tensor-cores\scripts\ncu_matmul.ps1:77 char:3
++   & $ncu @nargs 2>&1 | Out-File -Append -Encoding utf8 $log
++   ~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (done matmul_epilogue gpt2s.ffn_up.m2048:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+==PROF== Disconnected from process 27672
+==PROF== Report: D:\ccml-tensor-cores\profiles\sm_89\matmul\fused_vs_unfused_gpt2s.ffn_up.m2048.ncu-rep
+
+#### gpt2s.attn_out.m2048
+==PROF== Connected to process 23448 (D:\ccml-tensor-cores\build\local\bin\ccml_bench_matmul_epilogue.exe)
+# gpu: NVIDIA GeForce RTX 3050 A Laptop GPU (cc 8.9)  driver: 591.66  cuda runtime: 13.1  commit: unknown
+# peaks: fp32 11.128 TFLOPS theoretical, 0.000 measured; bandwidth 128.0 GB/s theoretical, 0.0 measured (0 = not measured)
+# tensor core peaks (16-bit in, fp32 accumulate): f16 22.257 TFLOPS theoretical, 0.000 measured; bf16 22.257 theoretical, 0.000 measured (0 = none on this GPU or not measured)
+# telemetry: NVML; other compute processes on GPU: 23
+op,impl,algo,dtype,tag,M,N,K,rows,cols,cache,iters,median_us,p10_us,p90_us,iqr_us,min_us,ci95_lo_us,ci95_hi_us,batched_mean_us,tflops,gbps,pct_peak_theory,pct_peak_measured,max_abs_err,max_rel_err,gate,sm_clock_mhz,mem_clock_mhz,temp_c,clock_reasons,throttled,gpu,cc,driver,cuda,commit
+==PROF== Profiling "matmul_mma_sync_epilogue": 0%....50%....100% - 18 passes
+==PROF== Profiling "matmul_mma_sync_epilogue": 0%....50%....100% - 18 passes
+==PROF== Profiling "matmul_mma_sync": 0%....50%....100% - 18 passes
+matmul_epilogue,ccml,fused_mma_sync,f16,gpt2s.attn_out.m2048,2048,768,768,0,0,warm,100,175.744,160.992,190.733,25.824,160.256,162.192,186.304,161.322,13.747,60.42,61.76,,0.06261,1,PASS,2205,8001,49,0x1,0,"NVIDIA GeForce RTX 3050 A Laptop GPU",8.9,591.66,13.1,unknown
+matmul_epilogue,ccml,fused_split_k,f16,gpt2s.attn_out.m2048,2048,768,768,0,0,warm,100,185.648,160.893,188,25.216,159.552,165.12,186.176,161.719,13.013,57.196,58.47,,0.06261,1,PASS,2205,8001,49,0x1,0,"NVIDIA GeForce RTX 3050 A Laptop GPU",8.9,591.66,13.1,unknown
+matmul_epilogue,ccml,mma_sync+separate,f16,gpt2s.attn_out.m2048,2048,768,768,0,0,warm,100,205.76,188.509,219.104,29.632,187.904,189.392,217.984,189.719,11.741,51.606,52.75,,0.09373,74.88,PASS,2205,8001,49,0x1,0,"NVIDIA GeForce RTX 3050 A Laptop GPU",8.9,591.66,13.1,unknown
+matmul_epilogue,ccml,split_k+separate,f16,gpt2s.attn_out.m2048,2048,768,768,0,0,warm,100,193.12,188.509,219.11,29.72,187.904,189.216,217.984,199.089,12.51,54.983,56.21,,0.09373,74.88,PASS,2205,8001,49,0x1,0,"NVIDIA GeForce RTX 3050 A Laptop GPU",8.9,591.66,13.1,unknown
+ncu.bat : done matmul_epilogue gpt2s.attn_out.m2048
+At D:\ccml-tensor-cores\scripts\ncu_matmul.ps1:77 char:3
++   & $ncu @nargs 2>&1 | Out-File -Append -Encoding utf8 $log
++   ~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (done matmul_epi....attn_out.m2048:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+==PROF== Disconnected from process 23448
+==PROF== Report: D:\ccml-tensor-cores\profiles\sm_89\matmul\fused_vs_unfused_gpt2s.attn_out.m2048.ncu-rep
+done 2026-11-17T12:31:02.4954194+05:30

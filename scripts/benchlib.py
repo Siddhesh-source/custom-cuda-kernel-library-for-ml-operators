@@ -140,6 +140,19 @@ def tolerance_dot(terms: int, scale: float) -> tuple[float, float]:
     return abs_t * (scale if scale > 0 else 1.0), rel_t
 
 
+# Unit roundoff and absolute floor per 16-bit storage type (support/compare.h).
+STORAGE = {"f16": (1.0 / 2048.0, 5.9604644775390625e-08),
+           "bf16": (1.0 / 256.0, 1.1754943508222875e-38)}
+
+
+def widen_for_storage(tol: tuple[float, float], dtype: str) -> tuple[float, float]:
+    """support/compare.h widen_for_storage: one final rounding to the storage type."""
+    if dtype not in STORAGE:
+        return tol
+    unit, floor = STORAGE[dtype]
+    return tol[0] + floor, tol[1] + 2.0 * unit
+
+
 def compare(got, ref, abs_tol: float, rel_tol: float):
     """got, ref: torch tensors (ref float64). Returns (pass, max_abs, max_rel)."""
     import torch
@@ -316,9 +329,9 @@ def csv_row(*, op: str, impl: str, algo: str, dtype: str, shape: dict, cold: boo
     tflops = flops / sec / 1e12 if timed and is_mm else 0.0
     gbps = nbytes / sec / 1e9 if timed else 0.0
     achieved = tflops if is_mm else gbps
-    theory = ctx["fp32_tflops_theory"] if is_mm else ctx["bandwidth_gbps_theory"]
-    meas = ctx["fp32_tflops_measured"] if is_mm else ctx["bandwidth_gbps_measured"]
-    peak_ok = timed and (not is_mm or dtype == "f32")
+    theory = matmul_peak_tflops(ctx, dtype, False) if is_mm else ctx["bandwidth_gbps_theory"]
+    meas = matmul_peak_tflops(ctx, dtype, True) if is_mm else ctx["bandwidth_gbps_measured"]
+    peak_ok = timed
 
     def opt(v, ok, d=6):
         return _fmt(v, d) if ok else ""
@@ -343,6 +356,22 @@ def csv_row(*, op: str, impl: str, algo: str, dtype: str, shape: dict, cold: boo
         cols += [""] * 5
     cols += [f'"{ctx["gpu"]}"', ctx["cc"], ctx["driver"], ctx["cuda"], ctx["commit"]]
     return ",".join(cols)
+
+
+def matmul_peak_tflops(peaks: dict, dtype: str, measured: bool) -> float:
+    """The compute ceiling a matmul of `dtype` is judged against; mirrors
+    bench/support/metrics.h matmul_peak_tflops. f32: CUDA-core FP32 peak; f16:
+    FP16 Tensor Core peak; bf16: BF16 Tensor Core peak where it exists, else the
+    FP32 peak (sm_75 can only widen BF16 to FP32). 0 = unknown."""
+    kind = "measured" if measured else "theory"
+    fp32 = peaks.get(f"fp32_tflops_{kind}", 0.0)
+    if dtype == "f16":
+        return peaks.get(f"tc_f16_tflops_{kind}", 0.0)
+    if dtype == "bf16":
+        if peaks.get("tc_bf16_tflops_theory", 0.0) <= 0.0:
+            return fp32
+        return peaks.get(f"tc_bf16_tflops_{kind}", 0.0)
+    return fp32
 
 
 def load_peaks(path: Optional[str]) -> dict:

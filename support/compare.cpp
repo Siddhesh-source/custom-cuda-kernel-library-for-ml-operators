@@ -73,6 +73,11 @@ double rms(const std::vector<double>& values) {
 ErrorStats compare(const std::vector<float>& got,
                    const std::vector<double>& reference,
                    const Tolerance& tolerance) {
+  return compare(got, reference, tolerance, std::vector<double>());
+}
+
+ErrorStats compare(const std::vector<float>& got, const std::vector<double>& reference,
+                   const Tolerance& tolerance, const std::vector<double>& extra_abs) {
   ErrorStats stats;
   stats.count = got.size();
 
@@ -98,7 +103,8 @@ ErrorStats compare(const std::vector<float>& got,
     const double magnitude = std::fabs(expected);
 
     const double rel_error = (magnitude > 0.0) ? (abs_error / magnitude) : 0.0;
-    const double bound = tolerance.abs_tol + tolerance.rel_tol * magnitude;
+    const double bound = tolerance.abs_tol + tolerance.rel_tol * magnitude +
+                         (extra_abs.empty() ? 0.0 : extra_abs[i]);
     const double normalized = (bound > 0.0)
                                   ? (abs_error / bound)
                                   : (abs_error > 0.0

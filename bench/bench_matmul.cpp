@@ -1,24 +1,196 @@
 /* Matmul benchmark: every ccml variant against cuBLAS and cuBLASLt, on every
-   shape in bench/shapes.json (reference.md §3, §4, §6). Timing only; the
-   in-run correctness gate decides what may be timed (reference.md §11). */
+   shape in bench/shapes.json, for each requested storage type (reference.md
+   §3, §4, §5 dtype comparison, §6). Timing only; the in-run correctness gate
+   decides what may be timed (reference.md §11).
+
+   FP16/BF16: inputs are generated in float, rounded to the storage type, and
+   the fp64 DGEMM reference is computed from the ROUNDED values, as in
+   tests/test_dtypes.cpp; the tolerance is the f32 one widened for the final
+   rounding (support/compare.h, docs/correctness.md). The vendor baseline is
+   cublasGemmEx / cuBLASLt with 16-bit storage and FP32 accumulation, the same
+   contract as ccml_matmul_f16/bf16. */
 
 #include <cstdio>
+#include <cstring>
 #include <exception>
+#include <stdexcept>
+#include <string>
 #include <utility>
 #include <vector>
+
+#include <cuda_bf16.h>
+#include <cuda_fp16.h>
+#include <cuda_runtime.h>
 
 #include "bench/baselines/cublas.h"
 #include "bench/support/driver.h"
 #include "bench/support/metrics.h"
+#include "bench/support/typed.h"
 #include "ccml/matmul.h"
 #include "ccml/status.h"
 #include "ccml/tuning.h"
 #include "support/compare.h"
-#include "support/device_buffer.h"
 #include "support/random.h"
 
 using namespace ccml_bench;
-using ccml_support::DeviceBuffer;
+
+namespace {
+
+/* Every variant the bench times through the algo enum. */
+const ccml_matmul_algo kAlgos[] = {CCML_MATMUL_NAIVE,          CCML_MATMUL_TILED,
+                                   CCML_MATMUL_REGISTER_TILED, CCML_MATMUL_VECTORIZED,
+                                   CCML_MATMUL_DOUBLE_BUFFERED, CCML_MATMUL_WMMA,
+                                   CCML_MATMUL_MMA_SYNC,        CCML_MATMUL_SPLIT_K,
+                                   CCML_MATMUL_SPLIT_K_ATOMIC, CCML_MATMUL_MMA_SYNC_SWIZZLED};
+
+/* The Tensor Core family and its sweep-row prefix. f32 rows report NOT_RUN
+   (no FP32 Tensor Core path on sm_75). */
+const std::pair<ccml_matmul_algo, const char*> kTcFamily[] = {{CCML_MATMUL_WMMA, "wmma_"},
+                                                              {CCML_MATMUL_MMA_SYNC, "mma_"},
+                                                              {CCML_MATMUL_SPLIT_K, "splitk_"}};
+
+template <typename D>
+void run_shape(const Options& options, Emitter& emitter, CublasBaseline& cublas,
+               const ShapeEntry& shape, cudaStream_t stream) {
+  using Pub = typename D::Pub;
+  const int M = static_cast<int>(shape.M), N = static_cast<int>(shape.N),
+            K = static_cast<int>(shape.K);
+  const double elems =
+      static_cast<double>(shape.M * shape.K + shape.K * shape.N + shape.M * shape.N);
+  /* Operands + fp64 copies for the DGEMM gate. */
+  if (!fits_in_memory(elems * (sizeof(Pub) + 8.0))) {
+    emitter.skip(D::name, shape, "insufficient device memory");
+    return;
+  }
+
+  std::vector<float> raw_a(static_cast<std::size_t>(M) * K);
+  std::vector<float> raw_b(static_cast<std::size_t>(K) * N);
+  ccml_support::Rng rng(1234);
+  rng.normal(raw_a.data(), raw_a.size(), 0.0f, 1.0f);
+  rng.normal(raw_b.data(), raw_b.size(), 0.0f, 1.0f);
+  /* Round to the storage type; the reference sees exactly the stored values. */
+  std::vector<Pub> host_a(raw_a.size()), host_b(raw_b.size());
+  for (std::size_t i = 0; i < raw_a.size(); ++i) {
+    host_a[i] = D::from_float(raw_a[i]);
+    raw_a[i] = D::to_float(host_a[i]);
+  }
+  for (std::size_t i = 0; i < raw_b.size(); ++i) {
+    host_b[i] = D::from_float(raw_b[i]);
+    raw_b[i] = D::to_float(host_b[i]);
+  }
+
+  std::vector<double> reference;
+  if (!cublas.dgemm_reference(reference, raw_a, raw_b, M, N, K)) {
+    emitter.skip(D::name, shape, "fp64 reference failed");
+    return;
+  }
+  const ccml_test::Tolerance tolerance =
+      D::widen(ccml_test::tolerance_for_f32_dot_product(K, ccml_test::rms(reference)));
+
+  DeviceArray<Pub> a(host_a.size()), b(host_b.size()), c(static_cast<std::size_t>(M) * N);
+  a.upload(host_a);
+  b.upload(host_b);
+  Pub* const pc = c.data();
+  const Pub* const pa = a.data();
+  const Pub* const pb = b.data();
+
+  std::vector<Candidate> candidates;
+  const double gflop = matmul_flops(M, N, K) / 1e9;
+  if (options.wants("ccml")) {
+    for (ccml_matmul_algo algo : kAlgos) {
+      /* Over the cap the naive kernel is reported NOT_RUN, never timed. */
+      const bool skip = algo == CCML_MATMUL_NAIVE && options.naive_max_gflop > 0.0 &&
+                        gflop > options.naive_max_gflop;
+      candidates.push_back({"ccml", ccml_matmul_algo_name(algo), [=] {
+                              return !skip && D::run(pc, pa, pb, M, N, K, algo, stream) ==
+                                                  CCML_SUCCESS;
+                            }});
+    }
+  }
+  /* Tile sweep: every configuration of every tiled variant as its own row,
+     named <variant prefix>_<tile shape> ("rt_" register_tiled, "vec_"
+     vectorized, "db_" double_buffered). Index 0 duplicates the enum path on
+     purpose, so the two can be cross-checked in one table. An unsupported
+     pairing reports NOT_RUN. */
+  if (options.wants("ccml_tiles") && options.tile_sweep) {
+    const std::pair<ccml_matmul_algo, const char*> family[] = {
+        {CCML_MATMUL_REGISTER_TILED, "rt_"},
+        {CCML_MATMUL_VECTORIZED, "vec_"},
+        {CCML_MATMUL_DOUBLE_BUFFERED, "db_"}};
+    for (const auto& [variant, prefix] : family) {
+      if (options.sweep == "tc") break;
+      for (int index = 0; index < ccml_matmul_tile_config_count(); ++index) {
+        ccml_matmul_tile_config t;
+        ccml_matmul_tile_config_get(index, &t);
+        const std::string name = prefix + std::to_string(t.bm) + "x" + std::to_string(t.bn) +
+                                 "x" + std::to_string(t.bk) + "_" + std::to_string(t.tm) + "x" +
+                                 std::to_string(t.tn);
+        const ccml_matmul_algo v = variant;
+        candidates.push_back({"ccml_tiles", name, [=] {
+                                return D::tuned(pc, pa, pb, M, N, K, v, index, stream) ==
+                                       CCML_SUCCESS;
+                              }});
+      }
+    }
+    /* Tensor Core configurations: <prefix><block tile>_w<warp tile>. */
+    if (D::blas != BlasType::F32 && options.sweep != "cc") {
+      for (const auto& [variant, prefix] : kTcFamily) {
+        for (int index = 0; index < ccml_matmul_tc_config_count(); ++index) {
+          ccml_matmul_tc_config t;
+          ccml_matmul_tc_config_get(index, &t);
+          const std::string name = prefix + std::to_string(t.bm) + "x" + std::to_string(t.bn) +
+                                   "x" + std::to_string(t.bk) + "_w" + std::to_string(t.wm) +
+                                   "x" + std::to_string(t.wn);
+          const ccml_matmul_algo v = variant;
+          candidates.push_back({"ccml_tiles", name, [=] {
+                                  return D::tuned(pc, pa, pb, M, N, K, v, index, stream) ==
+                                         CCML_SUCCESS;
+                                }});
+        }
+      }
+    }
+  }
+  if (options.wants("cublas")) {
+    if (D::blas == BlasType::F32) {
+      candidates.push_back({"cublas", "sgemm", [&cublas, pc, pa, pb, M, N, K] {
+                              return cublas.sgemm(reinterpret_cast<float*>(pc),
+                                                  reinterpret_cast<const float*>(pa),
+                                                  reinterpret_cast<const float*>(pb), M, N, K);
+                            }});
+    } else {
+      candidates.push_back({"cublas", "gemmex", [&cublas, pc, pa, pb, M, N, K] {
+                              return cublas.gemm_ex(pc, pa, pb, M, N, K, D::blas);
+                            }});
+    }
+  }
+  if (options.wants("cublaslt")) {
+    const bool lt_ready = cublas.lt_prepare(M, N, K, D::blas);
+    candidates.push_back({"cublaslt", "heuristic_top1", [&cublas, lt_ready, pc, pa, pb] {
+                            return lt_ready && cublas.lt_matmul(pc, pa, pb);
+                          }});
+  }
+
+  const auto fetch = [&c](std::vector<float>& got) {
+    std::vector<Pub> raw;
+    if (!c.download(raw)) return false;
+    got.resize(raw.size());
+    for (std::size_t i = 0; i < raw.size(); ++i) got[i] = D::to_float(raw[i]);
+    return true;
+  };
+  std::vector<Gated> gated;
+  for (const Candidate& candidate : candidates) {
+    /* Poison the output: 0xFF bytes are NaN in all three types, so an element
+       a candidate fails to write cannot pass on a previous candidate's data. */
+    if (cudaMemset(c.data(), 0xFF, c.count() * sizeof(Pub)) != cudaSuccess) {
+      throw std::runtime_error("cudaMemset failed");
+    }
+    gated.push_back(gate(candidate, fetch, reference, tolerance, stream));
+  }
+  emitter.emit(D::name, shape, matmul_flops(M, N, K),
+               matmul_bytes(M, N, K, static_cast<int>(sizeof(Pub))), gated, stream);
+}
+
+}  // namespace
 
 int main(int argc, char** argv) {
   try {
@@ -29,95 +201,11 @@ int main(int argc, char** argv) {
 
     for (const ShapeEntry& shape : load_shapes(options.shapes, "matmul")) {
       if (!tag_matches(shape, options.filter)) continue;
-      const int M = static_cast<int>(shape.M), N = static_cast<int>(shape.N),
-                K = static_cast<int>(shape.K);
-      const double elems = static_cast<double>(shape.M * shape.K + shape.K * shape.N +
-                                               shape.M * shape.N);
-      /* fp32 operands + fp64 copies for the DGEMM gate. */
-      if (!fits_in_memory(elems * (4.0 + 8.0))) {
-        emitter.skip("f32", shape, "insufficient device memory");
-        continue;
+      for (const std::string& dtype : options.dtypes) {
+        if (dtype == "f32") run_shape<F32>(options, emitter, cublas, shape, stream);
+        if (dtype == "f16") run_shape<F16>(options, emitter, cublas, shape, stream);
+        if (dtype == "bf16") run_shape<BF16>(options, emitter, cublas, shape, stream);
       }
-
-      std::vector<float> host_a(static_cast<std::size_t>(M) * K);
-      std::vector<float> host_b(static_cast<std::size_t>(K) * N);
-      ccml_support::Rng rng(1234);
-      rng.normal(host_a.data(), host_a.size(), 0.0f, 1.0f);
-      rng.normal(host_b.data(), host_b.size(), 0.0f, 1.0f);
-
-      std::vector<double> reference;
-      if (!cublas.dgemm_reference(reference, host_a, host_b, M, N, K)) {
-        emitter.skip("f32", shape, "fp64 reference failed");
-        continue;
-      }
-      const ccml_test::Tolerance tolerance =
-          ccml_test::tolerance_for_f32_dot_product(K, ccml_test::rms(reference));
-
-      DeviceBuffer a(host_a.size()), b(host_b.size()),
-          c(static_cast<std::size_t>(M) * N);
-      a.upload(host_a.data());
-      b.upload(host_b.data());
-
-      std::vector<Candidate> candidates;
-      const double gflop = matmul_flops(M, N, K) / 1e9;
-      if (options.wants("ccml")) {
-        for (ccml_matmul_algo algo :
-             {CCML_MATMUL_NAIVE, CCML_MATMUL_TILED, CCML_MATMUL_REGISTER_TILED,
-              CCML_MATMUL_VECTORIZED, CCML_MATMUL_DOUBLE_BUFFERED}) {
-          /* Over the cap the naive kernel is reported NOT_RUN, never timed. */
-          const bool skip = algo == CCML_MATMUL_NAIVE && options.naive_max_gflop > 0.0 &&
-                            gflop > options.naive_max_gflop;
-          candidates.push_back({"ccml", ccml_matmul_algo_name(algo), [&, algo, skip] {
-                                  return !skip &&
-                                         ccml_matmul_f32(c.data(), a.data(), b.data(), M,
-                                                         N, K, algo, stream) == CCML_SUCCESS;
-                                }});
-        }
-      }
-      /* Tile sweep: every configuration of every tiled variant as its own row,
-         named <variant prefix>_<tile shape> ("rt_" register_tiled, "vec_"
-         vectorized). Index 0 duplicates the enum path on purpose, so the two
-         can be cross-checked in one table. An unsupported pairing reports
-         NOT_RUN. */
-      if (options.wants("ccml_tiles") && options.tile_sweep) {
-        const std::pair<ccml_matmul_algo, const char*> family[] = {
-            {CCML_MATMUL_REGISTER_TILED, "rt_"}, {CCML_MATMUL_VECTORIZED, "vec_"},
-            {CCML_MATMUL_DOUBLE_BUFFERED, "db_"}};
-        for (const auto& [variant, prefix] : family) {
-          for (int index = 0; index < ccml_matmul_tile_config_count(); ++index) {
-            ccml_matmul_tile_config t;
-            ccml_matmul_tile_config_get(index, &t);
-            const std::string name = prefix + std::to_string(t.bm) + "x" + std::to_string(t.bn) +
-                                     "x" + std::to_string(t.bk) + "_" + std::to_string(t.tm) +
-                                     "x" + std::to_string(t.tn);
-            const ccml_matmul_algo v = variant;
-            candidates.push_back({"ccml_tiles", name, [&, v, index] {
-                                    return ccml_matmul_tuned_f32(c.data(), a.data(), b.data(), M,
-                                                                 N, K, v, index,
-                                                                 stream) == CCML_SUCCESS;
-                                  }});
-          }
-        }
-      }
-      if (options.wants("cublas")) {
-        candidates.push_back({"cublas", "sgemm", [&] {
-                                return cublas.sgemm(c.data(), a.data(), b.data(), M, N, K);
-                              }});
-      }
-      if (options.wants("cublaslt")) {
-        const bool lt_ready = cublas.lt_prepare(M, N, K);
-        candidates.push_back({"cublaslt", "heuristic_top1", [&, lt_ready] {
-                                return lt_ready &&
-                                       cublas.lt_matmul(c.data(), a.data(), b.data());
-                              }});
-      }
-
-      std::vector<Gated> gated;
-      for (const Candidate& candidate : candidates) {
-        gated.push_back(gate(candidate, c.data(), c.count(), reference, tolerance, stream));
-      }
-      emitter.emit("f32", shape, matmul_flops(M, N, K), matmul_bytes(M, N, K, 4),
-                   gated, stream);
     }
   } catch (const std::exception& e) {
     std::fprintf(stderr, "ccml_bench_matmul: %s\n", e.what());

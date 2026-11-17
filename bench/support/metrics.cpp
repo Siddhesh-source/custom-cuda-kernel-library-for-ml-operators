@@ -35,6 +35,29 @@ int fp32_cores_per_sm(int major, int minor) {
   }
 }
 
+int tc_flops_per_clock_per_sm(int major, int minor, bool bf16) {
+  if (bf16 && major < 8) return 0;
+  switch (major) {
+    case 7: return (minor == 0 || minor == 2 || minor == 5) ? 1024 : 0; /* V100, T4 */
+    case 8:
+      if (minor == 0) return 2048;                    /* A100 */
+      return (minor == 6 || minor == 9) ? 512 : 0;    /* GeForce Ampere / Ada */
+    case 9: return 4096;                              /* H100 */
+    default: return 0;
+  }
+}
+
+double matmul_peak_tflops(const DevicePeaks& peaks, const std::string& dtype, bool measured) {
+  const double fp32 = measured ? peaks.fp32_tflops_measured : peaks.fp32_tflops_theory;
+  if (dtype == "f16") return measured ? peaks.tc_f16_tflops_measured : peaks.tc_f16_tflops_theory;
+  if (dtype == "bf16") {
+    const bool has_tc = peaks.tc_bf16_tflops_theory > 0.0;
+    if (!has_tc) return fp32;
+    return measured ? peaks.tc_bf16_tflops_measured : peaks.tc_bf16_tflops_theory;
+  }
+  return fp32;
+}
+
 DevicePeaks theoretical_peaks(const ccml_device_info& info, int max_sm_clock_mhz) {
   DevicePeaks peaks;
   const int lanes = fp32_cores_per_sm(info.compute_major, info.compute_minor);
@@ -44,6 +67,11 @@ DevicePeaks theoretical_peaks(const ccml_device_info& info, int max_sm_clock_mhz
   }
   peaks.fp32_tflops_theory = static_cast<double>(info.multiprocessor_count) *
                              lanes * 2.0 * clock_hz / 1e12;
+  const double sm_clock = static_cast<double>(info.multiprocessor_count) * clock_hz / 1e12;
+  peaks.tc_f16_tflops_theory =
+      sm_clock * tc_flops_per_clock_per_sm(info.compute_major, info.compute_minor, false);
+  peaks.tc_bf16_tflops_theory =
+      sm_clock * tc_flops_per_clock_per_sm(info.compute_major, info.compute_minor, true);
   peaks.bandwidth_gbps_theory = 2.0 *
                                 (static_cast<double>(info.memory_clock_khz) * 1e3) *
                                 (static_cast<double>(info.memory_bus_width) / 8.0) /
@@ -86,6 +114,9 @@ bool load_measured_peaks(const std::string& path, DevicePeaks* peaks) {
   const std::string text = buffer.str();
   const bool a = find_number(text, "fp32_tflops_measured", &peaks->fp32_tflops_measured);
   const bool b = find_number(text, "bandwidth_gbps_measured", &peaks->bandwidth_gbps_measured);
+  /* Optional: absent from peaks files written before the Tensor Core kernels. */
+  find_number(text, "tc_f16_tflops_measured", &peaks->tc_f16_tflops_measured);
+  find_number(text, "tc_bf16_tflops_measured", &peaks->tc_bf16_tflops_measured);
   return a && b;
 }
 

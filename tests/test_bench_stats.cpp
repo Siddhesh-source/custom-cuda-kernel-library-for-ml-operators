@@ -168,6 +168,27 @@ CCML_TEST(bench_stats, theoretical_peaks_match_published_t4_figures) {
   ctx.check(std::fabs(theoretical_peaks(t4, 1000).fp32_tflops_theory - 8.1408) < 1e-3,
             "a lower NVML clock never lowers the theoretical peak");
   ctx.check(fp32_cores_per_sm(3, 0) == 0, "unknown arch: 0, not a guess");
+  /* T4 datasheet: 65 TFLOPS mixed precision (FP16 in, FP32 accumulate). */
+  ctx.check(std::fabs(p.tc_f16_tflops_theory - 65.13) < 0.01, "40*1024*1.59 GHz");
+  ctx.check(p.tc_bf16_tflops_theory == 0.0, "no BF16 Tensor Cores on sm_75");
+  ctx.check(tc_flops_per_clock_per_sm(8, 0, true) == 2048, "A100 BF16 = FP16 rate");
+  ctx.check(tc_flops_per_clock_per_sm(6, 1, false) == 0, "Pascal: no Tensor Cores");
+}
+
+CCML_TEST(bench_stats, matmul_peak_follows_dtype) {
+  DevicePeaks p;
+  p.fp32_tflops_theory = 8.0;
+  p.tc_f16_tflops_theory = 65.0;
+  p.fp32_tflops_measured = 7.0;
+  p.tc_f16_tflops_measured = 40.0;
+  ctx.check(matmul_peak_tflops(p, "f32", false) == 8.0, "f32: CUDA cores");
+  ctx.check(matmul_peak_tflops(p, "f16", false) == 65.0, "f16: Tensor Cores");
+  ctx.check(matmul_peak_tflops(p, "f16", true) == 40.0, "f16 measured");
+  ctx.check(matmul_peak_tflops(p, "bf16", true) == 7.0,
+            "bf16 without BF16 Tensor Cores: the FP32 ceiling");
+  p.tc_bf16_tflops_theory = 65.0;
+  p.tc_bf16_tflops_measured = 39.0;
+  ctx.check(matmul_peak_tflops(p, "bf16", true) == 39.0, "bf16 with Tensor Cores");
 }
 
 CCML_TEST(bench_stats, throttle_classification) {
