@@ -395,7 +395,7 @@ at M = 16.
 
 **Status:** implemented and correct (FP16 everywhere; BF16 on sm_80+, SKIP on
 the T4; all 3 Tensor Core configurations). Local sm_89 evidence below; the
-official T4 timings are pending (Kaggle, `results/sm_75/matmul.csv`).
+official T4 result is at the end of this entry.
 
 ### Hypothesis
 
@@ -519,7 +519,7 @@ registers, 127-128 after, with timings unchanged within 1%):
 
 ### Verdict
 
-**Kept** (FP16 everywhere, BF16 on sm_80+), pending the T4 run, which is the
+**Kept** (FP16 everywhere, BF16 on sm_80+), the T4 result is at the end of this entry, and it is the
 real test of prediction 1.
 
 1. At least 3x over double_buffered and 40-70% of cuBLAS on large shapes:
@@ -566,7 +566,7 @@ gain): **falsified on the T4 too** (3.66x at decode sizes).
 
 **Status:** implemented and correct (FP16 from sm_75, BF16 from sm_80, SKIP on
 the T4; all 3 Tensor Core configurations). Local sm_89 evidence below, after
-**two corrections during the step**; the official T4 timings are pending.
+**two corrections during the step**; the official T4 result is at the end.
 
 ### Hypothesis
 
@@ -697,7 +697,7 @@ test, and it is not claimed until then.
 
 ### Verdict
 
-**Kept**, with configuration 1 as its default; T4 pending.
+**Kept**, with configuration 1 as its default; T4 result below.
 
 1. Conflicts near zero: **loads met** (60.7 K -> 6.6 K; 0 at decode size).
    **Stores: met at decode size (0), not explained on the larger grid (131 K).**
@@ -841,7 +841,7 @@ the enum MMA_SYNC, configuration 1, against split-K deterministic and atomic):
 ### Verdict
 
 **Kept** (both variants; SPLIT_K is the default choice, being deterministic and
-faster). T4 pending.
+faster). T4 result below.
 
 1. 1.3-2.5x over the best MMA_SYNC configuration where the grid is under the
    SM count: **met where the grid is far below it**: 2.2-2.3x on GPT-2
@@ -849,7 +849,7 @@ faster). T4 pending.
    24-CTA shapes already cover its 14 SMs, so they show nothing (1.00x,
    0.93x); on the T4's 40 SMs they are also under-filled, which the T4 run
    tests.
-2. Beats cuBLAS on at least one decode target shape (T4 pending). **On sm_89,
+2. Beats cuBLAS on at least one decode target shape (T4: met, see below). **On sm_89,
    indicative:** 2.29x on gpt2s ffn_down 1x768x3072, 1.58x on llama1b attn_out
    16x2048x2048 (3.5x at M = 1, where cuBLAS picks a much slower kernel), at
    identical clocks. **Loss:** gpt2s attn_out (768x768), 9.2 vs 8.2 us
@@ -889,7 +889,7 @@ holds only as "not faster".
 ## 7. Matmul: threadblock swizzle (enhancement S1; `CCML_MATMUL_MMA_SYNC_SWIZZLED`)
 
 **Status:** implemented and correct (FP16; BF16 on sm_80+). Local sm_89
-evidence below; T4 pending.
+evidence below; T4 result at the end of the entry.
 
 ### Hypothesis
 
@@ -1004,7 +1004,7 @@ reproduce on the T4: cold, 32.7 vs 32.3 us (0.99x, within noise of cuBLAS's
 ## 8. Matmul: fused bias / GELU / residual epilogue (enhancements F1, B2; `ccml_matmul_epilogue_<dtype>`)
 
 **Status:** implemented and correct (FP16; BF16 on sm_80+). Local sm_89
-evidence below; T4 pending.
+evidence below; T4 result at the end of the entry.
 
 ### Hypothesis
 
