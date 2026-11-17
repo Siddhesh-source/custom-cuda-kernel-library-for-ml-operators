@@ -987,10 +987,17 @@ __device__ __forceinline__ void store_pair(T* C, int M, int N, int row, int col,
  *   grid  = (div_up(N, BN), div_up(M, BM))
  *   block = (BM/WM) * (BN/WN) warps
  */
-template <typename T, int BM, int BN, int BK, int WM, int WN, bool kVec>
-__global__ void __launch_bounds__((BM / WM) * (BN / WN) * 32, 2)
-matmul_mma_sync(T* C, const T* A, const T* B, int M, int N, int K) {
-  if constexpr (MmaSyncAvailable<T>::value) {
+/* One block tile of C over the K range [k_begin, k_end): the MMA_SYNC main
+   loop, shared by MMA_SYNC itself (the whole K), split-K (one slice) and the
+   fused epilogue. Elements of A and B past k_end read as zero, so a slice
+   boundary behaves like the end of K. `epi(row, col, v0, v1)` receives every
+   pair of adjacent accumulators (row, col) and (row, col + 1); col is even
+   and rows/columns may lie outside C (the epilogue checks). Every thread of
+   the block must call this (it contains barriers). */
+template <typename T, int BM, int BN, int BK, int WM, int WN, bool kVec, typename Epilogue>
+__device__ __forceinline__ void mma_sync_block_tile(const T* A, const T* B, int M, int N, int K,
+                                                    int k_begin, int k_end, Epilogue epi) {
+  {
     constexpr int kWarpsN = BN / WN;
     constexpr int kThreads = (BM / WM) * kWarpsN * 32;
     constexpr int kTilesM = WM / 16; /* m16 tiles per warp */
@@ -1064,14 +1071,15 @@ matmul_mma_sync(T* C, const T* A, const T* B, int M, int N, int K) {
         if (!kAllA && tid + p * kThreads >= kChunksA) continue;
         const int col = k0 + a_col[p];
         if (kVec) {
-          /* K % 8 == 0: col < K means the whole chunk is inside. */
-          ra[p] = (a_row_ok[p] && col < K) ? *reinterpret_cast<const uint4*>(a_src[p] + k0)
+          /* K % 8 == 0 and k_end is K or a multiple of BK, so col < k_end
+             means the whole chunk is inside. */
+          ra[p] = (a_row_ok[p] && col < k_end) ? *reinterpret_cast<const uint4*>(a_src[p] + k0)
                                             : make_uint4(0, 0, 0, 0);
         } else {
           Raw8 x;
 #pragma unroll
           for (int j = 0; j < 8; ++j) {
-            x.v[j] = (a_row_ok[p] && col + j < K) ? a_src[p][k0 + j] : 0;
+            x.v[j] = (a_row_ok[p] && col + j < k_end) ? a_src[p][k0 + j] : 0;
           }
           ra[p] = *reinterpret_cast<const uint4*>(&x);
         }
@@ -1082,12 +1090,12 @@ matmul_mma_sync(T* C, const T* A, const T* B, int M, int N, int K) {
         const int row = k0 + b_row[p];
         const unsigned short* src = b_src[p] + static_cast<long long>(k0) * N;
         if (kVec) {
-          rb[p] = (row < K && b_col[p] < N) ? *reinterpret_cast<const uint4*>(src)
+          rb[p] = (row < k_end && b_col[p] < N) ? *reinterpret_cast<const uint4*>(src)
                                             : make_uint4(0, 0, 0, 0);
         } else {
           Raw8 x;
 #pragma unroll
-          for (int j = 0; j < 8; ++j) x.v[j] = (row < K && b_col[p] + j < N) ? src[j] : 0;
+          for (int j = 0; j < 8; ++j) x.v[j] = (row < k_end && b_col[p] + j < N) ? src[j] : 0;
           rb[p] = *reinterpret_cast<const uint4*>(&x);
         }
       }
@@ -1119,13 +1127,13 @@ matmul_mma_sync(T* C, const T* A, const T* B, int M, int N, int K) {
     const int lm = lane >> 3;
     const int lr = lane & 7;
 
-    fetch(0);
+    fetch(k_begin);
     stash(0);
     __syncthreads();
 
     int buf = 0;
-    for (int k0 = 0; k0 < K; k0 += BK) {
-      const bool has_next = k0 + BK < K;
+    for (int k0 = k_begin; k0 < k_end; k0 += BK) {
+      const bool has_next = k0 + BK < k_end;
       if (has_next) fetch(k0 + BK); /* in flight during the math below */
 
       const unsigned short* const as = As + buf * kStageA;
@@ -1174,10 +1182,69 @@ matmul_mma_sync(T* C, const T* A, const T* B, int M, int N, int K) {
 #pragma unroll
       for (int j = 0; j < kTilesN; ++j) {
         const int col = block_col + warp_col + j * 8 + (lane % 4) * 2;
-        store_pair<T, kVec>(C, M, N, row, col, acc[i][j][0], acc[i][j][1]);
-        store_pair<T, kVec>(C, M, N, row + 8, col, acc[i][j][2], acc[i][j][3]);
+        epi(row, col, acc[i][j][0], acc[i][j][1]);
+        epi(row + 8, col, acc[i][j][2], acc[i][j][3]);
       }
     }
+  }
+}
+
+template <typename T, int BM, int BN, int BK, int WM, int WN, bool kVec>
+__global__ void __launch_bounds__((BM / WM) * (BN / WN) * 32, 2)
+matmul_mma_sync(T* C, const T* A, const T* B, int M, int N, int K) {
+  if constexpr (MmaSyncAvailable<T>::value) {
+    mma_sync_block_tile<T, BM, BN, BK, WM, WN, kVec>(
+        A, B, M, N, K, 0, K, [&](int row, int col, float v0, float v1) {
+          store_pair<T, kVec>(C, M, N, row, col, v0, v1);
+        });
+  }
+}
+
+/*
+ * Split-K (docs/optimization-log.md, entry 6; enhancement S2): CTA
+ * (x, y, s) computes block tile (x, y) over K slice s,
+ * [s * slice, min(K, (s + 1) * slice)), with the MMA_SYNC main loop, and
+ * writes the FP32 partial:
+ *   kAtomic = false: to its own slab W[s][M][N] (deterministic; summed in
+ *                    slice order by splitk_reduce);
+ *   kAtomic = true:  atomicAdd into one zeroed W[M][N] (non-deterministic
+ *                    order; rounded by splitk_reduce with S = 1).
+ * `slice` is a multiple of BK.
+ */
+template <typename T, int BM, int BN, int BK, int WM, int WN, bool kVec, bool kAtomic>
+__global__ void __launch_bounds__((BM / WM) * (BN / WN) * 32, 2)
+matmul_mma_sync_splitk(float* W, const T* A, const T* B, int M, int N, int K, int slice) {
+  if constexpr (MmaSyncAvailable<T>::value) {
+    const int s = static_cast<int>(blockIdx.z);
+    const int k_begin = s * slice;
+    const int k_end = min(K, k_begin + slice);
+    float* const w = kAtomic ? W : W + static_cast<long long>(s) * M * N;
+    mma_sync_block_tile<T, BM, BN, BK, WM, WN, kVec>(
+        A, B, M, N, K, k_begin, k_end, [&](int row, int col, float v0, float v1) {
+          if (row >= M) return;
+          float* dst = w + static_cast<long long>(row) * N + col;
+          if (kAtomic) {
+            if (col < N) atomicAdd(dst, v0);
+            if (col + 1 < N) atomicAdd(dst + 1, v1);
+          } else if (kVec && col + 1 < N) {
+            *reinterpret_cast<float2*>(dst) = make_float2(v0, v1);
+          } else {
+            if (col < N) dst[0] = v0;
+            if (col + 1 < N) dst[1] = v1;
+          }
+        });
+  }
+}
+
+/* C[i] = round_to_T(sum over s of W[s][i]), in slice order. One thread per
+   element, grid-stride. */
+template <typename T>
+__global__ void splitk_reduce(T* C, const float* W, long long count, int slices) {
+  for (long long i = blockIdx.x * static_cast<long long>(blockDim.x) + threadIdx.x; i < count;
+       i += static_cast<long long>(gridDim.x) * blockDim.x) {
+    float sum = 0.0f;
+    for (int s = 0; s < slices; ++s) sum += W[static_cast<long long>(s) * count + i];
+    C[i] = ccml::detail::from_float<T>(sum);
   }
 }
 

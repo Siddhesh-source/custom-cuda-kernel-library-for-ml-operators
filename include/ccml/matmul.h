@@ -25,7 +25,15 @@ typedef enum ccml_matmul_algo {
   /* Tensor Cores (16-bit input, FP32 accumulate). f16: sm_70+; bf16: sm_80+;
      f32 and unsupported architectures return CCML_ERROR_NOT_IMPLEMENTED. */
   CCML_MATMUL_WMMA = 6,           /* nvcuda::wmma 16x16x16 on the double-buffered tiling */
-  CCML_MATMUL_MMA_SYNC = 7        /* mma.sync m16n8k8 + ldmatrix, swizzled shared tiles (f16: sm_75+) */
+  CCML_MATMUL_MMA_SYNC = 7,       /* mma.sync m16n8k8 + ldmatrix, swizzled shared tiles (f16: sm_75+) */
+  /* Split-K on the MMA_SYNC main loop, for decode shapes (M <= 16): K is cut
+     into slices so the grid fills the GPU, and FP32 partials are reduced by a
+     second kernel. Takes a temporary workspace from cudaMallocAsync on
+     `stream`. SPLIT_K is deterministic (fixed reduction order);
+     SPLIT_K_ATOMIC accumulates with atomicAdd and is NOT bitwise
+     deterministic between runs. */
+  CCML_MATMUL_SPLIT_K = 8,
+  CCML_MATMUL_SPLIT_K_ATOMIC = 9
 } ccml_matmul_algo;
 
 CCML_API const char* ccml_matmul_algo_name(ccml_matmul_algo algo);

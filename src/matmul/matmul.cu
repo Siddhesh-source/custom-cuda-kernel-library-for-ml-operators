@@ -276,14 +276,108 @@ ccml_status launch_mma_sync(T* C, const T* A, const T* B, int M, int N, int K,
   }
 }
 
+/* ------------------------------------------------------------ split-K --
+ *
+ * Optimization log entry 6 (S2). Number of K slices: enough CTAs for two per
+ * SM, at least 4 k-steps per slice. S = 1 runs MMA_SYNC directly (no
+ * workspace, no second kernel). The FP32 workspace comes from the
+ * stream-ordered allocator on the caller's stream, so concurrent calls on
+ * different streams never share it. */
+
+int sm_count() {
+  static const int count = [] {
+    int device = 0, n = 0;
+    if (cudaGetDevice(&device) != cudaSuccess ||
+        cudaDeviceGetAttribute(&n, cudaDevAttrMultiProcessorCount, device) != cudaSuccess) {
+      (void)cudaGetLastError();
+      return 1;
+    }
+    return n;
+  }();
+  return count;
+}
+
+/* Slice length in elements of K (a multiple of bk) for a grid of `tiles`. */
+int splitk_slice(int tiles, int K, int bk) {
+  const int ksteps = (K + bk - 1) / bk;
+  const int max_slices = ksteps / 4 > 1 ? ksteps / 4 : 1;
+  int slices = (2 * sm_count() + tiles - 1) / tiles;
+  if (slices > max_slices) slices = max_slices;
+  if (slices < 1) slices = 1;
+  return ((ksteps + slices - 1) / slices) * bk;
+}
+
+template <typename T, int I, bool kAtomic>
+ccml_status launch_split_k(T* C, const T* A, const T* B, int M, int N, int K,
+                           cudaStream_t stream) {
+  if constexpr (std::is_same<T, float>::value) {
+    ccml::detail::set_last_error(
+        "ccml_matmul: Tensor Core variants take 16-bit input (f16, or bf16 on sm_80+); "
+        "sm_75 has no FP32 Tensor Core path");
+    return CCML_ERROR_NOT_IMPLEMENTED;
+  } else {
+    constexpr MatmulTcConfig cfg = kMatmulTcConfigs[I];
+    const bool vec = K % 8 == 0 && N % 8 == 0 && aligned(A, 16) && aligned(B, 16) &&
+                     aligned(C, 16);
+    const dim3 tiles = ccml::detail::grid_for_2d(N, M, cfg.bn, cfg.bm);
+    const int slice = splitk_slice(static_cast<int>(tiles.x * tiles.y), K, cfg.bk);
+    const int slices = (K + slice - 1) / slice;
+    if (slices == 1) return launch_mma_sync<T, I>(C, A, B, M, N, K, stream);
+
+    void (*const splitk_vec)(float*, const T*, const T*, int, int, int, int) =
+        &ccml::kernels::matmul_mma_sync_splitk<T, cfg.bm, cfg.bn, cfg.bk, cfg.wm, cfg.wn, true,
+                                               kAtomic>;
+    void (*const splitk_scalar_global)(float*, const T*, const T*, int, int, int, int) =
+        &ccml::kernels::matmul_mma_sync_splitk<T, cfg.bm, cfg.bn, cfg.bk, cfg.wm, cfg.wn,
+                                               false, kAtomic>;
+    static const int arch = compiled_arch(splitk_vec);
+    const ccml_status ok =
+        require_tc<T>(arch, kAtomic ? CCML_MATMUL_SPLIT_K_ATOMIC : CCML_MATMUL_SPLIT_K);
+    if (ok != CCML_SUCCESS) return ok;
+
+    const long long count = static_cast<long long>(M) * N;
+    const std::size_t bytes = static_cast<std::size_t>(kAtomic ? 1 : slices) * count * 4;
+    void* workspace = nullptr;
+    CCML_CUDA_TRY(cudaMallocAsync(&workspace, bytes, stream));
+    float* const W = static_cast<float*>(workspace);
+    /* Every launch below returns through this lambda, so the workspace is
+       always freed. */
+    const ccml_status run = [&]() -> ccml_status {
+      if (kAtomic) CCML_CUDA_TRY(cudaMemsetAsync(W, 0, bytes, stream));
+      ccml::detail::LaunchConfig config;
+      config.block = dim3((cfg.bm / cfg.wm) * (cfg.bn / cfg.wn) * 32, 1, 1);
+      config.grid = dim3(tiles.x, tiles.y, static_cast<unsigned>(slices));
+      if (vec) {
+        CCML_LAUNCH(splitk_vec, config, stream, W, A, B, M, N, K, slice);
+      } else {
+        CCML_LAUNCH(splitk_scalar_global, config, stream, W, A, B, M, N, K, slice);
+      }
+      ccml::detail::LaunchConfig reduce;
+      reduce.block = dim3(256, 1, 1);
+      const long long blocks = (count + 255) / 256;
+      reduce.grid = dim3(static_cast<unsigned>(blocks < 4096 ? blocks : 4096), 1, 1);
+      CCML_LAUNCH(ccml::kernels::splitk_reduce<T>, reduce, stream, C, W, count,
+                  kAtomic ? 1 : slices);
+      return CCML_SUCCESS;
+    }();
+    CCML_CUDA_TRY(cudaFreeAsync(workspace, stream));
+    return run;
+  }
+}
+
 /* The configuration each Tensor Core algo enum runs. MMA_SYNC uses 1
    (64x64x32, 4 warps): configuration 0 spills at its 128-register occupancy
    floor, and 1 was fastest in the sm_89 sweep (optimization log entry 5); the
    T4 sweep re-checks the choice. */
 int tc_default_config(ccml_matmul_algo algo) { return algo == CCML_MATMUL_MMA_SYNC ? 1 : 0; }
 
+/* Split-K's configuration for the enum: the 16-row tile for decode sizes
+   (M <= 16), MMA_SYNC's default otherwise. */
+int splitk_default_config(int M) { return M <= 16 ? 2 : 1; }
+
 bool is_tc_family(ccml_matmul_algo algo) {
-  return algo == CCML_MATMUL_WMMA || algo == CCML_MATMUL_MMA_SYNC;
+  return algo == CCML_MATMUL_WMMA || algo == CCML_MATMUL_MMA_SYNC ||
+         algo == CCML_MATMUL_SPLIT_K || algo == CCML_MATMUL_SPLIT_K_ATOMIC;
 }
 
 template <typename T, int I>
@@ -294,6 +388,10 @@ ccml_status launch_tc_family(ccml_matmul_algo algo, T* C, const T* A, const T* B
       return launch_wmma<T, I>(C, A, B, M, N, K, stream);
     case CCML_MATMUL_MMA_SYNC:
       return launch_mma_sync<T, I>(C, A, B, M, N, K, stream);
+    case CCML_MATMUL_SPLIT_K:
+      return launch_split_k<T, I, false>(C, A, B, M, N, K, stream);
+    case CCML_MATMUL_SPLIT_K_ATOMIC:
+      return launch_split_k<T, I, true>(C, A, B, M, N, K, stream);
     default:
       ccml::detail::set_last_error("ccml_matmul: not a Tensor Core algorithm");
       return CCML_ERROR_INVALID_ARGUMENT;
@@ -352,6 +450,10 @@ ccml_status matmul(Public* C_pub, const Public* A_pub, const Public* B_pub, int 
     case CCML_MATMUL_MMA_SYNC:
       return tc_family(algo, C, A, B, M, N, K, tc_default_config(algo), stream);
 
+    case CCML_MATMUL_SPLIT_K:
+    case CCML_MATMUL_SPLIT_K_ATOMIC:
+      return tc_family(algo, C, A, B, M, N, K, splitk_default_config(M), stream);
+
     default:
       ccml::detail::set_last_error(
           (fn_name(ccml::detail::dtype_suffix<Public>()) + ": unknown algorithm").c_str());
@@ -389,6 +491,8 @@ const char* ccml_matmul_algo_name(ccml_matmul_algo algo) {
     case CCML_MATMUL_DOUBLE_BUFFERED: return "double_buffered";
     case CCML_MATMUL_WMMA:           return "wmma";
     case CCML_MATMUL_MMA_SYNC:       return "mma_sync";
+    case CCML_MATMUL_SPLIT_K:        return "split_k";
+    case CCML_MATMUL_SPLIT_K_ATOMIC: return "split_k_atomic";
   }
   return "unknown";
 }

@@ -145,12 +145,14 @@ class DeviceArray {
 const ccml_matmul_algo kAlgos[] = {CCML_MATMUL_NAIVE,          CCML_MATMUL_TILED,
                                    CCML_MATMUL_REGISTER_TILED, CCML_MATMUL_VECTORIZED,
                                    CCML_MATMUL_DOUBLE_BUFFERED, CCML_MATMUL_WMMA,
-                                   CCML_MATMUL_MMA_SYNC};
+                                   CCML_MATMUL_MMA_SYNC,        CCML_MATMUL_SPLIT_K,
+                                   CCML_MATMUL_SPLIT_K_ATOMIC};
 
 /* The Tensor Core family and its sweep-row prefix. f32 rows report NOT_RUN
    (no FP32 Tensor Core path on sm_75). */
 const std::pair<ccml_matmul_algo, const char*> kTcFamily[] = {{CCML_MATMUL_WMMA, "wmma_"},
-                                                              {CCML_MATMUL_MMA_SYNC, "mma_"}};
+                                                              {CCML_MATMUL_MMA_SYNC, "mma_"},
+                                                              {CCML_MATMUL_SPLIT_K, "splitk_"}};
 
 template <typename D>
 void run_shape(const Options& options, Emitter& emitter, CublasBaseline& cublas,

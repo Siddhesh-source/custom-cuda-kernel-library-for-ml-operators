@@ -687,7 +687,8 @@ test, and it is not claimed until then.
 
 ## 6. Matmul: split-K for decode shapes (enhancement S2; `CCML_MATMUL_SPLIT_K`, `CCML_MATMUL_SPLIT_K_ATOMIC`)
 
-**Status:** hypothesis committed before the code.
+**Status:** implemented and correct (FP16; BF16 on sm_80+). Local sm_89
+evidence below; sm_89 has 14 SMs, so the T4 (40 SMs) is the real test.
 
 ### Hypothesis
 
@@ -734,3 +735,88 @@ is inside every timed call.
 kernel is not bandwidth-starved by idle SMs but limited per CTA (e.g. by
 global-load latency with one prefetch stage), or the workspace allocation and
 second launch costing more than the parallelism wins.
+
+### Change
+
+- The MMA_SYNC kernel body became `mma_sync_block_tile` (a K range and an
+  epilogue functor); MMA_SYNC calls it with the whole K and the same store as
+  before, and split-K with one slice and an FP32 partial store.
+  `matmul_mma_sync_splitk<..., kAtomic>` and `splitk_reduce<T>` in
+  `src/matmul/matmul_kernels.cuh`; host `launch_split_k` in `matmul.cu`.
+- Slices: enough CTAs for 2 per SM, at least 4 k-steps per slice; S = 1 runs
+  MMA_SYNC directly. The enum uses configuration 2 (16x128) for M <= 16 and 1
+  otherwise; bench sweep rows `splitk_*`.
+- Workspace: `cudaMallocAsync` / `cudaFreeAsync` on the caller's stream,
+  freed on every path.
+- Tests (`matmul_tc`, now 11 cases): split-K inherits every Tensor Core case
+  (awkward shapes with several slices, every k-step count, misaligned views,
+  poisoned outputs), plus **determinism (C3)**: over 20 runs of
+  16x768x3072, **SPLIT_K differed bitwise 0 times; SPLIT_K_ATOMIC differed 19
+  of 19 times** (still within tolerance).
+
+### Evidence
+
+**Timings, local sm_89 (indicative), FP16, warm L2, median of 200,
+interleaved per shape, all rows at 2550-2565 MHz** (`results/sm_89/split_k_*.csv`).
+"best mma" is the fastest MMA_SYNC tile configuration on that shape.
+
+| Shape (M x N x K) | MMA_SYNC CTAs | best mma | **split_k** | split_k_atomic | cuBLAS (GemmEx / Lt) |
+|---|---|---|---|---|---|
+| gpt2s ffn_down 1x768x3072 | 6 | 32.8 us | **14.3 us (2.29x)** | 16.4 | 32.8 / 32.8 |
+| gpt2s ffn_down 16x768x3072 | 6 | 33.8 | **15.4 (2.20x)** | 17.4 | **FAIL** (gate) |
+| gpt2s attn_out 1x768x768 | 6 | 11.3 | **9.2 (1.22x)** | 10.2 | 8.1 / 8.2 |
+| gpt2s attn_out 16x768x768 | 6 | 11.3 | **9.2 (1.22x)** | 12.3 | 8.2 / 8.2 |
+| llama1b attn_out 1x2048x2048 | 16 | 24.6 | **19.5 (1.26x)** | 20.5 | 68.6 / 68.6 |
+| llama1b attn_out 16x2048x2048 | 16 | 25.6 | **19.5 (1.32x)** | 22.5 | 31.7 / 30.7 |
+| gpt2s qkv 16x2304x768 | 18 | 13.3 | 13.3 (1.00x) | 16.4 | 16.4 / 16.4 |
+| gpt2s ffn_up 16x3072x768 | 24 | 13.3 | 14.3 (0.93x) | 17.4 | 17.5 / 17.4 |
+| llama1b ffn_down 1x2048x8192 | 16 | 272 | 276 (0.99x) | 278 | 300 / 299 |
+| llama1b ffn_down 16x2048x8192 | 16 | 274 | 282 (0.97x) | 284 | **FAIL** (gate) |
+
+**cuBLAS FP16 fails the fp64 gate on both FFN-down shapes with M = 16**
+(max abs error 0.079 at K = 3072, 0.168 at K = 8192; GemmEx and the Lt
+heuristic alike), so those rows carry no timing (reference.md §11). Every ccml
+kernel passes on the same inputs. Error that large at FP32 accumulation is
+consistent with partial sums being rounded to FP16 inside a split-K
+reduction; that cause is an inference, not verified.
+
+**Nsight Compute, local sm_89, FP16** (`profiles/sm_89/matmul/mma_sync_vs_split_k_*`;
+the enum MMA_SYNC, configuration 1, against split-K deterministic and atomic):
+
+| Metric (gpt2s ffn_down 16x768x3072 / llama1b attn_out 16x2048x2048) | mma_sync (enum) | split_k main kernel |
+|---|---|---|
+| Duration under the profiler (cold) | 50.5 / 70.7 us | **41.3** / 69.9 us |
+| DRAM throughput, % of peak | 74.8% / 94.1% | **91.6% / 94.8%** |
+| Warps active | 8.3% / 19.0% | **17.4%** / 19.0% |
+| Tensor instructions | 147 K / 262 K | **36.9 K / 65.5 K** (16-row tile: 4x less waste) |
+| Shared store wavefronts per STS.128 | 4.0 / 4.0 | 4.0 / 4.0 (the ideal: conflict-free) |
+
+### Verdict
+
+**Kept** (both variants; SPLIT_K is the default choice, being deterministic and
+faster). T4 pending.
+
+1. 1.3-2.5x over the best MMA_SYNC configuration where the grid is under the
+   SM count: **met where the grid is far below it**: 2.2-2.3x on GPT-2
+   FFN-down (6 CTAs, K = 3072), 1.22-1.32x on attn_out. On sm_89 the 18- and
+   24-CTA shapes already cover its 14 SMs, so they show nothing (1.00x,
+   0.93x); on the T4's 40 SMs they are also under-filled, which the T4 run
+   tests.
+2. Beats cuBLAS on at least one decode target shape (T4 pending). **On sm_89,
+   indicative:** 2.29x on gpt2s ffn_down 1x768x3072, 1.58x on llama1b attn_out
+   16x2048x2048 (3.5x at M = 1, where cuBLAS picks a much slower kernel), at
+   identical clocks. **Loss:** gpt2s attn_out (768x768), 9.2 vs 8.2 us
+   (0.89x): at 1.2 MB of weights the second kernel and the workspace
+   allocation are a visible share of the time.
+3. Shapes whose grid already fills the GPU gain nothing: **met** (0.93-1.00x;
+   up to 7% lost on ffn_up, where the heuristic still picked S = 2).
+4. Atomic at most 10% faster than deterministic: **falsified, the other way:
+   SPLIT_K_ATOMIC is 5-26% slower** on every shape. The zeroing `memset` and
+   the atomics cost more than the S x M x N partial traffic they save, which
+   at M <= 16 is small. Determinism here is free; the atomic variant is kept
+   only as the measured counter-example.
+
+**Under the profiler (cold caches) llama1b attn_out shows no gain** (69.9 vs
+70.7 us; both at 94% of DRAM peak): there the warm-L2 gain of 1.32x comes from
+L2 bandwidth (its 8 MB of weights fit the 32 MB L2), not DRAM. The T4's 4 MB
+L2 will not hold it; the cold-cache rows of the T4 run decide.

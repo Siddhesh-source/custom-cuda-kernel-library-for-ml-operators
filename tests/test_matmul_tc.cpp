@@ -87,7 +87,8 @@ struct BF16 {
 };
 
 /* Every Tensor Core variant; a new one is added here and inherits every test. */
-const ccml_matmul_algo kTcAlgos[] = {CCML_MATMUL_WMMA, CCML_MATMUL_MMA_SYNC};
+const ccml_matmul_algo kTcAlgos[] = {CCML_MATMUL_WMMA, CCML_MATMUL_MMA_SYNC, CCML_MATMUL_SPLIT_K,
+                                     CCML_MATMUL_SPLIT_K_ATOMIC};
 
 /* Owning device array of 16-bit elements, with `extra` elements of slack so a
    view can start at an offset. */
@@ -323,4 +324,33 @@ CCML_TEST(matmul_tc, config_api_rejects_bad_input) {
               "config index out of range is rejected, not clamped");
   }
   ccml_device_free(d);
+}
+
+/* Enhancement C3: SPLIT_K reduces in a fixed order, so the same input gives
+   the same bits every run; SPLIT_K_ATOMIC does not promise that (atomicAdd
+   order varies) and is only required to be within tolerance, which the shape
+   tests above check. A decode shape with a long K, so several slices run. */
+CCML_TEST(matmul_tc, split_k_is_deterministic_atomic_is_marked) {
+  const int M = 16, N = 768, K = 3072;
+  const Problem<F16> p = make_problem<F16>(M, N, K, 9100);
+  Device16<ccml_f16> da(p.a.size()), db(p.b.size()), dc(static_cast<std::size_t>(M) * N);
+  ctx.check(da.ok() && db.ok() && dc.ok() && da.upload(p.a) && db.upload(p.b), "device setup");
+  for (ccml_matmul_algo algo : {CCML_MATMUL_SPLIT_K, CCML_MATMUL_SPLIT_K_ATOMIC}) {
+    std::vector<ccml_f16> first, again;
+    int differing_runs = 0;
+    for (int run = 0; run < 20; ++run) {
+      ctx.check(dc.poison(), "poison");
+      CCML_ASSERT_OK_OR_SKIP(F16::run(dc.get(), da.get(), db.get(), M, N, K, algo));
+      CCML_ASSERT_OK(ccml_device_synchronize());
+      ctx.check(dc.download(run == 0 ? first : again), "download");
+      if (run > 0 && std::memcmp(first.data(), again.data(), first.size() * sizeof(ccml_f16)) != 0) {
+        ++differing_runs;
+      }
+    }
+    ctx.note(std::string(ccml_matmul_algo_name(algo)) + ": " + std::to_string(differing_runs) +
+             " of 19 repeat runs differed bitwise from the first");
+    if (algo == CCML_MATMUL_SPLIT_K) {
+      ctx.check(differing_runs == 0, "SPLIT_K must be bitwise deterministic");
+    }
+  }
 }
