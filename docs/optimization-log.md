@@ -1147,3 +1147,54 @@ median ratio of the competitor's time to ccml fused:
    plain MMA_SYNC is only 0.58x of cuBLAS and fusion cannot make that up.
 3. vs cuBLASLt's epilogue: **met**: ccml wins only at decode (1.20x) and
    loses large (0.53x).
+
+---
+
+## 9. Layernorm: single-pass Welford in FP32 on pivot-shifted data (`CCML_LAYERNORM_WELFORD`)
+
+**Status:** hypothesis committed before the code.
+
+### Hypothesis
+
+`TWO_PASS` (Phase 2) reads each row three times and does every reduction in
+**FP64**: two conversions, a subtraction and an FMA per element per pass, and
+two 32-bit shuffles per double in each block reduction. FP64 runs at 1/32 of
+the FP32 rate on the T4 (0.25 TFLOPS) and 1/64 on GeForce Ada. On the T4 it
+reaches only **30-55 GB/s** (Phase 7, `results/sm_75/layernorm.csv`), 13-24% of
+the 227.6 GB/s measured peak, while PyTorch eager and Triton reach 150-240 GB/s
+on the same rows. Layer normalization should be memory-bound, so the kernel is
+bound by something else: the FP64 arithmetic and the extra passes.
+
+FP64 is there for a reason (`layernorm_kernels.cuh`): a FP32 mean at magnitude
+10000 carries ~5e-4 of error, which against a standard deviation of 0.01 is a
+5% output error. That argument assumes the values are accumulated as they come.
+**Subtracting a pivot first removes it:** with p = the row's first element,
+d = x - p is exact whenever x and p are within a factor of 2 of each other
+(Sterbenz), and otherwise rounds relative to |d| itself. The statistics of d
+are small numbers again, FP32 holds them to ~1e-7 of the spread, and
+x - mean = d - mean(d) never forms the large intermediate.
+
+**Change:** `CCML_LAYERNORM_WELFORD`, block per row as before, but
+- one pass for the statistics: each thread runs Welford's update on its d
+  values in FP32; threads merge with Chan's formula through warp shuffles and
+  one shared-memory step;
+- a second pass writes (d - mean_d) x rstd x gamma + beta, in FP32;
+- no FP64 anywhere.
+
+**Predictions** (FP32, warm L2; T4 official, sm_89 NCU):
+
+1. Large shapes (rows >= 2048): **3-6x faster than TWO_PASS**, reaching **at
+   least 50% of measured DRAM bandwidth** (>= 115 GB/s on the T4).
+2. Correctness at the FP32 reduction tolerance **including mean = 10000,
+   stddev = 0.01** (`large_offset_small_variance`), the case the FP64 design
+   exists for. If the pivot is the reason, then that test passes and nothing
+   else in the suite needs a wider tolerance.
+3. Nsight Compute: TWO_PASS shows the **FP64 pipe** busy (or its instructions
+   dominating issue) and memory throughput low; WELFORD shows no FP64
+   instructions and memory throughput as the top limiter.
+4. Small row counts (rows <= 16) barely change: 16 blocks on a 40-SM GPU are
+   latency-bound either way. Warp-per-row (entry 10) is the step for those.
+
+**What would falsify it:** a speedup under 2x (the FP64 was not the limit:
+the block-per-row structure is), or `large_offset_small_variance` failing
+(the pivot argument is wrong in practice).
