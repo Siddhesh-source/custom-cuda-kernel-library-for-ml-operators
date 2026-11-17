@@ -1,0 +1,33 @@
+========= COMPUTE-SANITIZER
+[PASS] harness.compare_identical_inputs_report_zero_error
+[PASS] harness.compare_reports_the_largest_deviation
+       n=3 max_abs=5.000e-01 max_rel=1.667e-01 normalized=0.500 worst_index=2 nonfinite=0
+[PASS] harness.compare_normalized_error_decides_the_verdict
+       inside:  n=1 max_abs=5.000e-02 max_rel=5.000e-02 normalized=0.500 worst_index=0 nonfinite=0
+       outside: n=1 max_abs=2.000e-01 max_rel=2.000e-01 normalized=2.000 worst_index=0 nonfinite=0
+[PASS] harness.compare_uses_absolute_tolerance_near_zero
+[PASS] harness.compare_per_element_allowance
+[PASS] harness.compare_flags_nonfinite_results
+       n=3 max_abs=0.000e+00 max_rel=0.000e+00 normalized=0.000 worst_index=1 nonfinite=2
+[PASS] harness.compare_flags_a_size_mismatch
+[PASS] harness.tolerance_grows_with_reduction_length
+       terms=1:     abs_tol=9.537e-07 rel_tol=9.537e-07
+       terms=10000: abs_tol=9.537e-05 rel_tol=9.537e-05
+[PASS] harness.rng_is_reproducible_for_a_given_seed
+[PASS] harness.rng_differs_between_seeds
+[PASS] harness.rng_uniform_respects_its_bounds
+       range covered: [-1.999846, 4.997363]
+[PASS] harness.rng_normal_has_the_requested_moments
+       mean=4.989133 stddev=2.002836
+[PASS] harness.div_up_rounds_up
+[PASS] harness.round_up_reaches_the_next_multiple
+[PASS] harness.grid_helpers_cover_every_element
+[PASS] harness.every_status_has_a_distinct_message
+[PASS] harness.version_string_is_populated
+       version: 0.1.0
+[PASS] harness.freeing_a_null_pointer_is_a_no_op
+[PASS] harness.device_buffer_move_transfers_ownership
+[PASS] harness.cuda_stream_move_transfers_ownership
+
+20 passed, 0 failed, 0 skipped
+========= ERROR SUMMARY: 0 errors

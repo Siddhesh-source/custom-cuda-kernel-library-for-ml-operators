@@ -1,0 +1,62 @@
+========= COMPUTE-SANITIZER
+[PASS] matmul_tc.F16_every_config_on_awkward_shapes
+       f16 wmma config 0 (128x128x32 warp 64x32): worst normalized error 0.498524
+       f16 wmma config 1 (64x64x32 warp 32x32): worst normalized error 0.497797
+       f16 wmma config 2 (16x128x32 warp 16x32): worst normalized error 0.498162
+       f16 mma_sync config 0 (128x128x32 warp 64x32): worst normalized error 0.498524
+       f16 mma_sync config 1 (64x64x32 warp 32x32): worst normalized error 0.497797
+       f16 mma_sync config 2 (16x128x32 warp 16x32): worst normalized error 0.498162
+       f16 split_k config 0 (128x128x32 warp 64x32): worst normalized error 0.498524
+       f16 split_k config 1 (64x64x32 warp 32x32): worst normalized error 0.497797
+       f16 split_k config 2 (16x128x32 warp 16x32): worst normalized error 0.498162
+       f16 split_k_atomic config 0 (128x128x32 warp 64x32): worst normalized error 0.498524
+       f16 split_k_atomic config 1 (64x64x32 warp 32x32): worst normalized error 0.497797
+       f16 split_k_atomic config 2 (16x128x32 warp 16x32): worst normalized error 0.498162
+       f16 mma_sync_swizzled config 0 (128x128x32 warp 64x32): worst normalized error 0.498524
+       f16 mma_sync_swizzled config 1 (64x64x32 warp 32x32): worst normalized error 0.497797
+       f16 mma_sync_swizzled config 2 (16x128x32 warp 16x32): worst normalized error 0.498162
+[PASS] matmul_tc.F16_every_k_step_count
+[PASS] matmul_tc.F16_misaligned_views
+[PASS] matmul_tc.F16_target_shapes
+       f16 wmma 128x768x768: normalized error 0.480505
+       f16 wmma 1x2304x768: normalized error 0.467276
+       f16 wmma 16x3072x768: normalized error 0.474909
+       f16 wmma 256x2304x768: normalized error 0.479936
+       f16 wmma 64x768x3072: normalized error 0.461984
+       f16 mma_sync 128x768x768: normalized error 0.480505
+       f16 mma_sync 1x2304x768: normalized error 0.467276
+       f16 mma_sync 16x3072x768: normalized error 0.474909
+       f16 mma_sync 256x2304x768: normalized error 0.479936
+       f16 mma_sync 64x768x3072: normalized error 0.461984
+       f16 split_k 128x768x768: normalized error 0.478898
+       f16 split_k 1x2304x768: normalized error 0.467276
+       f16 split_k 16x3072x768: normalized error 0.474909
+       f16 split_k 256x2304x768: normalized error 0.479936
+       f16 split_k 64x768x3072: normalized error 0.458082
+       f16 split_k_atomic 128x768x768: normalized error 0.478898
+       f16 split_k_atomic 1x2304x768: normalized error 0.467276
+       f16 split_k_atomic 16x3072x768: normalized error 0.474909
+       f16 split_k_atomic 256x2304x768: normalized error 0.479936
+       f16 split_k_atomic 64x768x3072: normalized error 0.458082
+       f16 mma_sync_swizzled 128x768x768: normalized error 0.480505
+       f16 mma_sync_swizzled 1x2304x768: normalized error 0.467276
+       f16 mma_sync_swizzled 16x3072x768: normalized error 0.474909
+       f16 mma_sync_swizzled 256x2304x768: normalized error 0.479936
+       f16 mma_sync_swizzled 64x768x3072: normalized error 0.461984
+[SKIP] matmul_tc.BF16_every_config_on_awkward_shapes
+       wmma config 0 (128x128x32 warp 64x32): ccml_matmul: wmma BF16 needs sm_80+; this binary runs sm_75 code on this device
+[SKIP] matmul_tc.BF16_every_k_step_count
+       wmma k-steps: ccml_matmul: wmma BF16 needs sm_80+; this binary runs sm_75 code on this device
+[SKIP] matmul_tc.BF16_misaligned_views
+       wmma misaligned: ccml_matmul: wmma BF16 needs sm_80+; this binary runs sm_75 code on this device
+[SKIP] matmul_tc.BF16_target_shapes
+       wmma enum: ccml_matmul: wmma BF16 needs sm_80+; this binary runs sm_75 code on this device
+[PASS] matmul_tc.f32_input_is_not_implemented
+[PASS] matmul_tc.config_api_rejects_bad_input
+[PASS] matmul_tc.split_k_is_deterministic_atomic_is_marked
+       split_k: 0 of 19 repeat runs differed bitwise from the first
+       split_k_atomic: 13 of 19 repeat runs differed bitwise from the first
+
+7 passed, 0 failed, 4 skipped
+NOTE: skipped tests are not evidence of correctness.
+========= RACECHECK SUMMARY: 0 hazards displayed (0 errors, 0 warnings)

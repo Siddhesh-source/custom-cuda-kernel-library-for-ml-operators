@@ -1,0 +1,37 @@
+suite            tool       exit     result
+infrastructure   memcheck   0        ========= ERROR SUMMARY: 1 error (expected: deliberate OOM in cuda_failures_carry_the_runtime_message)
+infrastructure   racecheck  0        ========= RACECHECK SUMMARY: 0 hazards displayed (0 errors, 0 warnings)
+infrastructure   initcheck  0        ========= ERROR SUMMARY: 0 errors
+infrastructure   synccheck  0        ========= ERROR SUMMARY: 0 errors
+harness          memcheck   0        ========= ERROR SUMMARY: 0 errors
+harness          racecheck  0        ========= RACECHECK SUMMARY: 0 hazards displayed (0 errors, 0 warnings)
+harness          initcheck  0        ========= ERROR SUMMARY: 0 errors
+harness          synccheck  0        ========= ERROR SUMMARY: 0 errors
+matmul           memcheck   0        ========= ERROR SUMMARY: 0 errors
+matmul           racecheck  0        ========= RACECHECK SUMMARY: 0 hazards displayed (0 errors, 0 warnings)
+matmul           initcheck  0        ========= ERROR SUMMARY: 0 errors
+matmul           synccheck  0        ========= ERROR SUMMARY: 0 errors
+matmul_tc        memcheck   0        ========= ERROR SUMMARY: 0 errors
+matmul_tc        racecheck  0        ========= RACECHECK SUMMARY: 0 hazards displayed (0 errors, 0 warnings)
+matmul_tc        initcheck  0        ========= ERROR SUMMARY: 0 errors
+matmul_tc        synccheck  0        ========= ERROR SUMMARY: 0 errors
+matmul_epilogue  memcheck   0        ========= ERROR SUMMARY: 0 errors
+matmul_epilogue  racecheck  0        ========= RACECHECK SUMMARY: 0 hazards displayed (0 errors, 0 warnings)
+matmul_epilogue  initcheck  0        ========= ERROR SUMMARY: 0 errors
+matmul_epilogue  synccheck  0        ========= ERROR SUMMARY: 0 errors
+layernorm        memcheck   0        ========= ERROR SUMMARY: 0 errors
+layernorm        racecheck  0        ========= RACECHECK SUMMARY: 0 hazards displayed (0 errors, 0 warnings)
+layernorm        initcheck  0        ========= ERROR SUMMARY: 0 errors
+layernorm        synccheck  0        ========= ERROR SUMMARY: 0 errors
+layernorm_residual memcheck   0        ========= ERROR SUMMARY: 0 errors
+layernorm_residual racecheck  0        ========= RACECHECK SUMMARY: 0 hazards displayed (0 errors, 0 warnings)
+layernorm_residual initcheck  0        ========= ERROR SUMMARY: 0 errors
+layernorm_residual synccheck  0        ========= ERROR SUMMARY: 0 errors
+softmax          memcheck   0        ========= ERROR SUMMARY: 0 errors
+softmax          racecheck  0        ========= RACECHECK SUMMARY: 0 hazards displayed (0 errors, 0 warnings)
+softmax          initcheck  0        ========= ERROR SUMMARY: 0 errors
+softmax          synccheck  0        ========= ERROR SUMMARY: 0 errors
+dtypes           memcheck   0        ========= ERROR SUMMARY: 0 errors
+dtypes           racecheck  0        ========= RACECHECK SUMMARY: 0 hazards displayed (0 errors, 0 warnings)
+dtypes           initcheck  0        ========= ERROR SUMMARY: 0 errors
+dtypes           synccheck  0        ========= ERROR SUMMARY: 0 errors
