@@ -27,10 +27,16 @@ def _softmax_kernel(y_ptr, x_ptr, cols, stride, BLOCK: tl.constexpr):
         offs = start + tl.arange(0, BLOCK)
         x = tl.load(x_row + offs, mask=offs < cols, other=float("-inf"))
         m_new = tl.maximum(m, x)
-        s = s * tl.exp(m - m_new) + tl.exp(x - m_new)
+        # A lane that has only ever seen -inf (padding past `cols`, or a masked
+        # input) has m == m_new == -inf, and exp(-inf - -inf) is NaN. Such a
+        # lane contributes exactly 0. Without this guard any row narrower than
+        # BLOCK came out NaN: the first Kaggle run's correctness gate failed
+        # 9 Triton rows for exactly that reason.
+        alive = m_new > float("-inf")
+        s = tl.where(alive, s * tl.exp(m - m_new) + tl.exp(x - m_new), 0.0)
         m = m_new
     row_max = tl.max(m, 0)
-    row_sum = tl.sum(s * tl.exp(m - row_max), 0)
+    row_sum = tl.sum(tl.where(m > float("-inf"), s * tl.exp(m - row_max), 0.0), 0)
     for start in range(0, cols, BLOCK):
         offs = start + tl.arange(0, BLOCK)
         x = tl.load(x_row + offs, mask=offs < cols, other=float("-inf"))

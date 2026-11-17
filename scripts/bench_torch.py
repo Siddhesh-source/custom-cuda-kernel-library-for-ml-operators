@@ -179,7 +179,8 @@ def main() -> int:
                         continue  # same rule as the C++ side: cold == warm here
                     measured = bl.time_interleaved(passing, cold, flush,
                                                    min_iters=args.min_iters,
-                                                   max_iters=args.max_iters) if passing else []
+                                                   max_iters=args.max_iters,
+                                                   tel=tel) if passing else []
                     t = tel.sample()
                     k = 0
                     for c, gate, mabs, mrel in gated:
@@ -193,7 +194,10 @@ def main() -> int:
                         out.write(bl.csv_row(op=op, impl=c.impl, algo=c.algo, dtype="f32",
                                              shape=shape, cold=cold, gate=gate,
                                              max_abs=mabs, max_rel=mrel, flops=flops,
-                                             nbytes=nbytes, measured=m, tel=t, ctx=ctx) + "\n")
+                                             nbytes=nbytes, measured=m,
+                                             tel=(m.telemetry if (m is not None and m.telemetry)
+                                                  else t),
+                                             ctx=ctx) + "\n")
                     out.flush()
                 print(f"done {op} {shape['tag']} ({time.time() - t0:.1f}s)", file=sys.stderr)
                 torch.cuda.empty_cache()

@@ -9,6 +9,7 @@
 #include <cuda_runtime.h>
 
 #include "bench/support/stats.h"
+#include "bench/support/telemetry.h"
 
 namespace ccml_bench {
 
@@ -42,11 +43,20 @@ struct TimingConfig {
   double budget_ms = 3000.0;       /* per candidate per cache mode */
   int    rounds = 4;
   bool   cold_l2 = false;
+  /* Launch-gap guard before every timed iteration (bench/support/spin.h).
+     Must exceed the host's submission time for start + kernel + stop. */
+  double guard_us = 200.0;
 };
 
 struct Measured {
-  Summary     summary;             /* microseconds */
+  Summary     summary;             /* microseconds, GPU time per call */
+  /* The spec's batched pattern: back-to-back launches with no guard. For
+     kernels shorter than their submission cost this includes CPU-bound gaps,
+     so it is the launch-throughput view, not the kernel time. */
   double      batched_mean_us = 0.0;
+  /* Sampled while this candidate's last round was still executing, so the
+     clocks are those the GPU ran at, not its idle clocks afterwards. */
+  Telemetry   telemetry;
   bool        valid = false;
   std::string error;
 };
@@ -68,7 +78,8 @@ class L2Flusher {
 std::vector<Measured> time_interleaved(const std::vector<Candidate>& candidates,
                                        const TimingConfig& config,
                                        cudaStream_t stream,
-                                       L2Flusher* flusher);
+                                       L2Flusher* flusher,
+                                       const TelemetrySource* telemetry = nullptr);
 
 /* Iteration count for an estimated per-call time: as many as fit in the
    budget, clamped to [min_iters, max_iters]. Exposed for tests. */

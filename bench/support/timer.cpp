@@ -5,6 +5,7 @@
 #include <stdexcept>
 #include <string>
 
+#include "bench/support/spin.h"
 #include "support/cuda_event.h"
 
 namespace ccml_bench {
@@ -53,7 +54,8 @@ int choose_iterations(double estimate_ms, const TimingConfig& config) {
 std::vector<Measured> time_interleaved(const std::vector<Candidate>& candidates,
                                        const TimingConfig& config,
                                        cudaStream_t stream,
-                                       L2Flusher* flusher) {
+                                       L2Flusher* flusher,
+                                       const TelemetrySource* telemetry) {
   std::vector<Measured> out(candidates.size());
   std::vector<std::vector<double>> samples(candidates.size());
   std::vector<int> iters(candidates.size(), config.max_iters);
@@ -101,11 +103,17 @@ std::vector<Measured> time_interleaved(const std::vector<Candidate>& candidates,
         std::vector<ccml_support::CudaEvent> stop(static_cast<std::size_t>(per_round));
         for (int k = 0; k < per_round; ++k) {
           if (cold) flusher->flush(stream);
+          launch_spin(stream, config.guard_us);
           start[static_cast<std::size_t>(k)].record(stream);
           if (!launch_checked(candidates[i])) {
             throw std::runtime_error("launch stopped succeeding mid-run");
           }
           stop[static_cast<std::size_t>(k)].record(stream);
+        }
+        /* Sample while the round is still executing (the guard alone keeps
+           the GPU busy for per_round * guard_us), on the last round. */
+        if (telemetry != nullptr && r == rounds - 1) {
+          out[i].telemetry = telemetry->sample();
         }
         stop.back().synchronize();
         for (int k = 0; k < per_round; ++k) {
