@@ -65,8 +65,13 @@ EXCLUDE_DIRS = {".git", "build", "out", "__pycache__", ".pytest_cache", ".vs",
 MAX_PAYLOAD_BYTES = 800_000
 
 
+# Set by --slug-suffix: lets two worktrees run their own sessions without
+# overwriting each other's kernels (ccml-matmul vs ccml-matmul-tc).
+SLUG_SUFFIX = ""
+
+
 def slug(job: str) -> str:
-    return "ccml-" + job
+    return "ccml-" + job + (("-" + SLUG_SUFFIX) if SLUG_SUFFIX else "")
 
 
 def config_dir() -> pathlib.Path:
@@ -178,7 +183,7 @@ def write_push_dir(username: str, job: str, use_gpu: bool, payload: str,
                                              encoding="utf-8")
     metadata = {
         "id": username + "/" + slug(job),
-        "title": "ccml " + job,
+        "title": "ccml " + job + ((" " + SLUG_SUFFIX) if SLUG_SUFFIX else ""),
         "code_file": "ccml_kaggle.py",
         "language": "python",
         "kernel_type": "script",
@@ -331,7 +336,12 @@ def main() -> None:
                         help="run on a CPU kernel: compile check only")
     parser.add_argument("--any-gpu", dest="pin_t4", action="store_false",
                         help="do not pin the T4; use if the T4 queue stalls")
+    parser.add_argument("--slug-suffix", default="",
+                        help="kernel slugs become ccml-<job>-<suffix>, so a second "
+                             "worktree's sessions never overwrite the first's")
     args = parser.parse_args()
+    global SLUG_SUFFIX
+    SLUG_SUFFIX = args.slug_suffix
 
     jobs = [j.strip() for j in args.jobs.split(",") if j.strip()]
     unknown = [j for j in jobs if j not in KNOWN_JOBS]
@@ -360,7 +370,8 @@ def main() -> None:
             if pending:
                 print("not pushed (GPU session cap): " + ", ".join(pending))
             print("\nFetch later with:\n    python cloud/kaggle/kaggle_run.py "
-                  "--fetch --jobs " + ",".join(jobs))
+                  "--fetch --jobs " + ",".join(jobs)
+                  + ((" --slug-suffix " + SLUG_SUFFIX) if SLUG_SUFFIX else ""))
             return
         schedule(username, pending, ids, args)
 
