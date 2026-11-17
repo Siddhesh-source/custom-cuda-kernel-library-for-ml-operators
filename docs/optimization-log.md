@@ -820,3 +820,41 @@ faster). T4 pending.
 70.7 us; both at 94% of DRAM peak): there the warm-L2 gain of 1.32x comes from
 L2 bandwidth (its 8 MB of weights fit the 32 MB L2), not DRAM. The T4's 4 MB
 L2 will not hold it; the cold-cache rows of the T4 run decide.
+
+---
+
+## 7. Matmul: threadblock swizzle (enhancement S1; `CCML_MATMUL_MMA_SYNC_SWIZZLED`)
+
+**Status:** hypothesis committed before the code.
+
+### Hypothesis
+
+CTAs are dispatched in `blockIdx` order, x fastest, so the CTAs resident at
+one moment cover a strip of C one block-row high and many block-columns wide:
+they share one row panel of A but each reads a different column panel of B.
+When the B panels a strip needs exceed L2, the next strip re-reads them all
+from DRAM. On the T4 (4 MB L2), 2048x4096x1024 FP16 has 8 MB of B and 4 MB
+of A, and MMA_SYNC's 64x64 tile gives a 64x32 grid of 2048 CTAs, about 160
+resident at a time (40 SMs x 4): each wave touches ~2.5 block-rows of A but 64
+column panels of B.
+
+**Change:** CUTLASS-style group-M rasterization. The grid becomes 1-D; CTA
+`pid` is mapped so that consecutive CTAs walk down a group of G = 8
+block-rows before moving one block-column right. A resident wave then covers
+about an 8 x 20 patch of C instead of a 2.5 x 64 strip: the same A panels plus
+far fewer B panels. Everything else is MMA_SYNC (same tile, configuration 1).
+
+**Predictions** (FP16, warm and cold L2):
+
+1. T4, shapes whose operands exceed its 4 MB L2 and whose grid spans several
+   waves (2048x4096x1024, 2048x3072x768, 2048x8192x2048, the LM heads with M
+   >= 512): **DRAM traffic falls by at least 20%** and time by **3-10%**.
+2. Grids of one wave or less (every decode shape, most M = 128 shapes)
+   **do not change** (+-2%): there is no second wave to reuse anything.
+3. sm_89 (32 MB L2, which holds every target shape's operands): **no
+   measurable change** on any shape. The local run can only check that the
+   mapping is correct and free.
+
+**What would falsify it:** no DRAM reduction on the T4's large shapes, which
+would mean the dispatch order is not raster or the hardware already reorders;
+or a slowdown from the index arithmetic.
