@@ -17,29 +17,29 @@ Status key: ✅ compliant · 🟡 partial · ❌ missing · ⚠️ contradicts s
 
 | # | Requirement | Clause | Status | Gap |
 |---|---|---|---|---|
-| 1 | Env: `nvidia-smi`, `nvcc`, `ncu`, `nsys` verified; `.venv` with CUDA PyTorch, triton, numpy, pandas, matplotlib, pytest | Setup | 🟡 | Kaggle T4 image has all of them (probe 2026-11-16: CUDA 13.0, torch 2.11+cu130, triton 3.6, ncu/nsys 2025.3); setup script and record still to commit |
+| 1 | Env: `nvidia-smi`, `nvcc`, `ncu`, `nsys` verified; `.venv` with CUDA PyTorch, triton, numpy, pandas, matplotlib, pytest | Setup | ✅ | `scripts/setup_env.sh`; recorded in `results/sm_75/env_*.txt` ([phase 7](results/phase-7-measurement-infrastructure.md)). Kaggle cannot bootstrap a venv, so the image interpreter is used and recorded |
 | 2 | Dirs `src bench tests results docs scripts` | Setup | ✅ | `scripts/` created |
 | 3 | Repo dir `profiles/` with small `.ncu-rep` files | R§7 | ✅ | Dir created; `.gitignore` exception added |
-| 4 | Target-shape list from real models (M,N,K, hidden, seq, batch) | R§3 | ❌ | No shape list; "sponsor shapes unknown" |
-| 5 | Correctness tests before speed; compute-sanitizer memcheck + racecheck | Method | 🟡 | Tests exist; sanitizer **never run** |
-| 6 | Warmup + CUDA events; **median** and spread of **100+** iters | Method | 🟡 | Harness reports mean/min/max/stddev; iteration count to verify |
-| 7 | Identical GPU/clocks/dtype/shapes; watch throttling & other processes | Method, R§11 | ❌ | Clocks, temps, throttle reasons not recorded |
-| 8 | Vendor baselines **cuBLAS / cuDNN**, PyTorch eager, **torch.compile (Inductor)**, naive, best-per-shape | R§4 | 🟡 | Only PyTorch eager, via case study; no direct cuBLAS/cuDNN; no Inductor |
-| 9 | Percent of hardware peak (TFLOPS, GB/s) | Method, R§6 | 🟡 | Case study only; harness CSV lacks TFLOPS/GB/s/%peak |
+| 4 | Target-shape list from real models (M,N,K, hidden, seq, batch) | R§3 | ✅ | `bench/shapes.json` (GPT-2 s/m, Llama-1B, BERT vocab; 146 shapes, odd included). Production shapes not supplied: recorded assumption, replaceable |
+| 5 | Correctness tests before speed; compute-sanitizer memcheck + racecheck | Method | ✅ | In-run fp64 gate; memcheck, racecheck, initcheck, synccheck clean on all suites (one deliberate API error, recognized) ([phase 7](results/phase-7-measurement-infrastructure.md)) |
+| 6 | Warmup + CUDA events; **median** and spread of **100+** iters | Method | ✅ | Warmup 20, 100-200 guarded per-iteration events, median/p10/p90/IQR/CI, batched cross-check |
+| 7 | Identical GPU/clocks/dtype/shapes; watch throttling & other processes | Method, R§11 | ✅ | One session per operator (same GPU); NVML clocks/temp/reasons per row, sampled mid-run; other processes logged. Clocks cannot be locked on Kaggle: recorded instead (T4 power cap documented) |
+| 8 | Vendor baselines **cuBLAS / cuDNN**, PyTorch eager, **torch.compile (Inductor)**, naive, best-per-shape | R§4 | ✅ | cuBLAS, cuBLASLt, cuDNN softmax, eager, compile, Triton; naive; best-per-shape analysis. cuDNN layernorm exists only in the graph API: eager is that vendor baseline (documented) |
+| 9 | Percent of hardware peak (TFLOPS, GB/s) | Method, R§6 | ✅ | TFLOPS / GB/s and % of theoretical and measured peak in every row |
 | 10 | Nsight Systems timelines, Nsight Compute metrics per major optimization | Method, R§9 | ❌ | Never run |
 | 11 | `CUDA_CHECK` on every call, `cudaGetLastError` on every launch | Method | ✅ | `src/common/check.h` — re-verify for each new kernel |
-| 12 | Matmul ladder: naive → smem tiling → register blocking → float4 → double buffering → Tensor Cores (WMMA or mma.sync); speedup recorded per step | R§3 | 🟡 | 2 of 6 rungs |
+| 12 | Matmul ladder: naive → smem tiling → register blocking → float4 → double buffering → Tensor Cores (WMMA or mma.sync); speedup recorded per step | R§3 | 🟡 | 2 of 6 rungs on `dev`; register blocking and float4 done on `matmul-ladder` (T4 numbers pending) |
 | 13 | Layernorm: block- or warp-per-row, Welford or two-pass, warp shuffle, vectorized, optional residual/bias fusion | R§3 | 🟡 | Two-pass block-per-row only |
 | 14 | Softmax: stable, online, warp-per-row short / block-per-row long, optional fused scale/mask | R§3 | 🟡 | Block-per-row three-pass only |
 | 15 | Correctness vs PyTorch **float64** with explicit tolerances for **FP32, FP16, BF16** | R§3, R§9 | ❌ | FP32 only (conflicting docs removed) |
-| 16 | Benchmark harness: CSV, TFLOPS, GB/s | R§3 | 🟡 | CSV yes; no throughput columns |
+| 16 | Benchmark harness: CSV, TFLOPS, GB/s | R§3 | ✅ | `bench/`, `scripts/bench_torch.py`; one CSV schema (docs/benchmarking.md) |
 | 17 | PyTorch extension via **`torch.utils.cpp_extension`**, droppable into a model | R§3, R§9 | ❌ | ctypes binding only (conflicting docs removed) |
 | 18 | Experiments: tile sweep, shape sweep (+odd shapes), dtype comparison, occupancy vs registers, vectorized vs scalar, fusion vs separate, end-to-end model latency | R§5 | ❌ | None run as sweeps |
 | 19 | Roofline plots | R§10 | ❌ | — |
 | 20 | Technical report + demo notebook | R§10 | ❌ | — |
-| 21 | ≥1 operator beats vendor on a target shape, or documented why not | R§9 | ❌ | All 2–11× slower |
+| 21 | ≥1 operator beats vendor on a target shape, or documented why not | R§9 | ❌ | Phase 7 baseline: ours vs best baseline median 0.17x (matmul), 0.31x (layernorm), 0.23x (softmax); only 2 tiny odd matmul shapes faster |
 | 22 | Kernel library with build system | R§10 | ✅ | CMake, presets, `find_package` |
-| 23 | Never report speed for a kernel failing tests | R§11 | ✅ | Enforced by policy; enforce in harness too ([E] gate) |
+| 23 | Never report speed for a kernel failing tests | R§11 | ✅ | Enforced in code: a non-PASS row carries no timing (tested). It caught a real bug in our Triton baseline |
 
 **Removed as non-compliant (2026-11-16):** `docs/project-vision.md` and
 `docs/milestone-40.md` declared Tensor Cores, fusion, FP16/BF16 and

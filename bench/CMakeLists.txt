@@ -15,7 +15,10 @@ add_library(ccml_bench_support STATIC
   support/telemetry.cpp
   support/timer.cpp
   support/report.cpp
-  support/driver.cpp)
+  support/driver.cpp
+  support/spin.cu)
+set_target_properties(ccml_bench_support PROPERTIES
+  CUDA_ARCHITECTURES "${CCML_CUDA_ARCHITECTURES}")
 
 target_include_directories(ccml_bench_support PUBLIC ${PROJECT_SOURCE_DIR})
 target_link_libraries(ccml_bench_support PUBLIC ccml::ccml ccml_support CUDA::cudart)

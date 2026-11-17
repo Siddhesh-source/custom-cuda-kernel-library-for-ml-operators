@@ -1,0 +1,18 @@
+Internal ctest changing into directory: /tmp/ccml-work/build
+Test project /tmp/ccml-work/build
+    Start 1: infrastructure
+1/6 Test #1: infrastructure ...................   Passed    0.57 sec
+    Start 2: harness
+2/6 Test #2: harness ..........................   Passed    0.46 sec
+    Start 3: matmul
+3/6 Test #3: matmul ...........................   Passed    1.21 sec
+    Start 4: layernorm
+4/6 Test #4: layernorm ........................   Passed    0.99 sec
+    Start 5: softmax
+5/6 Test #5: softmax ..........................   Passed    1.00 sec
+    Start 6: bench_stats
+6/6 Test #6: bench_stats ......................   Passed    0.03 sec
+
+100% tests passed, 0 tests failed out of 6
+
+Total Test time (real) =   4.31 sec

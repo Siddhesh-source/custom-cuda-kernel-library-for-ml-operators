@@ -210,17 +210,34 @@ class Candidate:
 class Measured:
     summary: Summary = field(default_factory=Summary)
     batched_mean_us: float = 0.0
+    telemetry: dict = field(default_factory=dict)  # sampled mid-run
     valid: bool = False
     error: str = ""
 
 
+def _spin_cycles(guard_us: float, tel: "Telemetry | None") -> int:
+    """Cycles for the launch-gap guard (bench/support/spin.h explains why).
+    Uses the GPU's max SM clock when known, so the guard is never shorter
+    than intended."""
+    mhz = 1600
+    if tel is not None and tel.ok:
+        try:
+            mhz = tel.nvml.nvmlDeviceGetMaxClockInfo(tel.handle, tel.nvml.NVML_CLOCK_SM)
+        except Exception:  # noqa: BLE001
+            pass
+    return int(guard_us * mhz)
+
+
 def time_interleaved(cands: Sequence[Candidate], cold: bool, flush_buf,
                      warmup: int = 20, min_iters: int = 100, max_iters: int = 200,
-                     budget_ms: float = 3000.0, rounds: int = 4) -> list[Measured]:
+                     budget_ms: float = 3000.0, rounds: int = 4,
+                     guard_us: float = 200.0, tel: "Telemetry | None" = None) -> list[Measured]:
     """Same method as bench/support/timer.cpp: warmup, per-iteration CUDA
-    events, interleaved rounds, optional L2 flush outside the timed region,
-    plus the spec's batched pattern as a cross-check (warm only)."""
+    events each preceded by a launch-gap guard, interleaved rounds, optional
+    L2 flush outside the timed region, telemetry sampled mid-run, plus the
+    spec's batched pattern as a cross-check (warm only)."""
     import torch
+    spin = _spin_cycles(guard_us, tel)
     out = [Measured() for _ in cands]
     iters = [max_iters] * len(cands)
     samples: list[list[float]] = [[] for _ in cands]
@@ -241,7 +258,7 @@ def time_interleaved(cands: Sequence[Candidate], cold: bool, flush_buf,
         except Exception as e:  # noqa: BLE001 -- any failure means "not timed"
             alive[i], out[i].error = False, f"{type(e).__name__}: {e}"
 
-    for _ in range(max(1, rounds)):
+    for r in range(max(1, rounds)):
         for i, c in enumerate(cands):
             if not alive[i]:
                 continue
@@ -252,9 +269,13 @@ def time_interleaved(cands: Sequence[Candidate], cold: bool, flush_buf,
                 for k in range(per_round):
                     if cold:
                         flush_buf.zero_()
+                    if spin > 0:
+                        torch.cuda._sleep(spin)
                     starts[k].record()
                     c.fn()
                     stops[k].record()
+                if tel is not None and r == rounds - 1:
+                    out[i].telemetry = tel.sample()
                 stops[-1].synchronize()
                 samples[i].extend(1e3 * s.elapsed_time(e) for s, e in zip(starts, stops))
             except Exception as e:  # noqa: BLE001

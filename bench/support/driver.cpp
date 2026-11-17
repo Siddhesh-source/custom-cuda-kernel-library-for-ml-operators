@@ -139,7 +139,7 @@ void Emitter::emit(const std::string& dtype, const ShapeEntry& shape, double flo
     cfg.cold_l2 = cold;
     const std::vector<Measured> measured =
         passing.empty() ? std::vector<Measured>{}
-                        : time_interleaved(passing, cfg, stream, flusher_);
+                        : time_interleaved(passing, cfg, stream, flusher_, &telemetry_);
     const Telemetry t = telemetry_.sample();
 
     std::size_t k = 0;
@@ -157,7 +157,11 @@ void Emitter::emit(const std::string& dtype, const ShapeEntry& shape, double flo
       row.flops = flops;
       row.bytes = bytes;
       row.telemetry = t;
-      if (g.gate == GateResult::Pass) row.timing = measured[k++];
+      if (g.gate == GateResult::Pass) {
+        row.timing = measured[k++];
+        /* Per-candidate clocks, sampled mid-run. */
+        if (row.timing.telemetry.available) row.telemetry = row.timing.telemetry;
+      }
       std::fprintf(out_, "%s\n", csv_row(row, ctx_).c_str());
       if (row.gate == GateResult::Pass && !row.timing.valid) {
         std::fprintf(stderr, "  timing invalid for %s/%s %s: %s\n", row.impl.c_str(),
