@@ -1271,3 +1271,47 @@ L2 and exceed DRAM bandwidth.
 4. rows <= 16 barely change: **falsified**: 4.0x at 16 x 4096 and 1.8x at
    1 x 768. The FP64 cost was per element, not per launch, so it showed even
    at 16 rows.
+
+---
+
+## 10. Layernorm: warp per row, row resident in registers (`CCML_LAYERNORM_WARP_PER_ROW`)
+
+**Status:** hypothesis committed before the code.
+
+### Hypothesis
+
+Entry 9's WELFORD gives each row a whole block: 256 threads, so at the common
+hidden sizes (768, 1024) a thread holds 3-4 values, and the row costs two
+block-wide barriers, a shared-memory merge, a per-element FP32 division
+(Welford's update; NCU: 33% more instructions than TWO_PASS), and a second
+read of the row for the output pass. For cols <= 1024 one warp is enough: 32
+lanes x up to 32 values each, in registers.
+
+**Change:** `CCML_LAYERNORM_WARP_PER_ROW`, cols <= 1024 (wider rows return
+`CCML_ERROR_UNSUPPORTED_SHAPE`):
+- one warp per row, 4 rows per 128-thread block, no `__syncthreads`;
+- the row is read **once** into registers (pivot-shifted as in entry 9);
+- exact two-pass statistics over the registers: mean of d by a warp-shuffle
+  sum, then sum of (d - mean)^2 by a second shuffle sum; no division per
+  element;
+- the output is written from the registers. The number of values per lane is
+  a template parameter chosen from the column count (1, 2, 4, 8, 16, 24, 32),
+  so short rows do not carry 32 registers.
+
+**Predictions** (FP32 and FP16, warm L2; T4 official, sm_89 NCU):
+
+1. rows >= 2048, cols <= 1024: **1.1-1.4x faster than WELFORD**; WELFORD is
+   already near the DRAM limit there on sm_89, so the room is the second read
+   and the instructions.
+2. rows 128-512, cols 768-1024 (mid sizes, partly L2-resident): **at least
+   1.5x faster than WELFORD**: barriers and the per-element division dominate
+   when each thread holds 3-4 values.
+3. NCU: **instructions executed fall by at least 2x** against WELFORD, DRAM
+   (or L2) throughput becomes the top limiter, and the global load count per
+   row halves (one pass instead of two).
+4. Correctness unchanged: every case of entry 9's tests at the FP32 tolerance,
+   for every per-lane bucket (cols 1 ... 1024).
+
+**What would falsify it:** no gain at rows >= 2048 on the T4 would mean the
+second read was free (served by L1) and the kernel was already at the DRAM
+limit; that would be recorded, and the variant kept only for mid sizes.
