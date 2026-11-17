@@ -13,7 +13,7 @@ LOGS="${2:?log dir}"
 mkdir -p "$LOGS"
 export PATH="/usr/local/cuda/bin:$PATH"
 
-suites=(infrastructure harness matmul matmul_tc matmul_epilogue layernorm softmax dtypes)
+suites=(infrastructure harness matmul matmul_tc matmul_epilogue layernorm layernorm_residual softmax dtypes)
 tools=(memcheck racecheck initcheck synccheck)
 status=0
 summary="$LOGS/summary.txt"

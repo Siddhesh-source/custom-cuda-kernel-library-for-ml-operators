@@ -365,6 +365,125 @@ layernorm_vectorized(T* y, const T* x, const T* gamma, const T* beta, int rows, 
   }
 }
 
+/* --------------------------------------------- fused residual + bias ---
+ *
+ * docs/optimization-log.md entry 12 (enhancement F2). s = x + residual + bias,
+ * computed in FP32 as (x + r) + b and rounded once to T; the layer norm is of
+ * the ROUNDED s, which is exactly what a separate add kernel followed by a
+ * layer norm computes. sum_out (optional) receives s. sum_out must not alias
+ * x or residual.
+ */
+template <typename T>
+__device__ __forceinline__ float residual_sum(const T* x, const T* r, const T* b, long long i,
+                                              int c, T* rounded) {
+  using ccml::detail::to_float;
+  float s = to_float(x[i]) + to_float(r[i]);
+  if (b != nullptr) s += to_float(b[c]);
+  *rounded = ccml::detail::from_float<T>(s);
+  return to_float(*rounded);
+}
+
+/* Block per row, any width: pass 1 forms s (writing sum_out) and its Welford
+   statistics; pass 2 forms s again (L2 serves the re-read) and writes y. */
+template <typename T>
+__global__ void layernorm_residual_welford(T* y, T* sum_out, const T* x, const T* residual,
+                                           const T* bias, const T* gamma, const T* beta,
+                                           int rows, int cols, float eps) {
+  using ccml::detail::to_float;
+  const int row = static_cast<int>(blockIdx.x);
+  if (row >= rows) return;
+  const long long base = static_cast<long long>(row) * cols;
+  __shared__ Welford scratch[32];
+  T tmp;
+  const float pivot = residual_sum(x, residual, bias, base, 0, &tmp);
+  Welford w{0.0f, 0.0f, 0.0f};
+  for (int c = static_cast<int>(threadIdx.x); c < cols; c += static_cast<int>(blockDim.x)) {
+    const float s = residual_sum(x, residual, bias, base + c, c, &tmp);
+    if (sum_out != nullptr) sum_out[base + c] = tmp;
+    welford_add(w, s - pivot);
+  }
+  w = welford_block_reduce(w, scratch);
+  const float mean_d = w.mean;
+  const float rstd = 1.0f / sqrtf(w.m2 / static_cast<float>(cols) + eps);
+  for (int c = static_cast<int>(threadIdx.x); c < cols; c += static_cast<int>(blockDim.x)) {
+    float v = (residual_sum(x, residual, bias, base + c, c, &tmp) - pivot - mean_d) * rstd;
+    if (gamma != nullptr) v *= to_float(gamma[c]);
+    if (beta != nullptr) v += to_float(beta[c]);
+    y[base + c] = ccml::detail::from_float<T>(v);
+  }
+}
+
+/* VECTORIZED's warp-per-row 128-bit kernel with the sum fused in front: x and
+   residual read once, s and y written once. Same preconditions as
+   layernorm_vectorized, plus residual, bias and sum_out 16-byte aligned. */
+template <typename T, int kChunks>
+__global__ void __launch_bounds__(32 * kRowsPerBlock)
+layernorm_residual_vectorized(T* y, T* sum_out, const T* x, const T* residual, const T* bias,
+                              const T* gamma, const T* beta, int rows, int cols, float eps) {
+  using ccml::detail::to_float;
+  constexpr int kV = static_cast<int>(16 / sizeof(T));
+  const int lane = static_cast<int>(threadIdx.x) % 32;
+  const int row = static_cast<int>(blockIdx.x) * kRowsPerBlock + static_cast<int>(threadIdx.x) / 32;
+  if (row >= rows) return;
+  const long long base = static_cast<long long>(row) * cols;
+  T tmp;
+  const float pivot = residual_sum(x, residual, bias, base, 0, &tmp);
+  float d[kChunks][kV];
+  float sum = 0.0f;
+#pragma unroll
+  for (int j = 0; j < kChunks; ++j) {
+    const int c0 = (lane + 32 * j) * kV;
+    if (c0 < cols) {
+      const Chunk16<T> xv = *reinterpret_cast<const Chunk16<T>*>(x + base + c0);
+      const Chunk16<T> rv = *reinterpret_cast<const Chunk16<T>*>(residual + base + c0);
+      Chunk16<T> bv, sv;
+      if (bias != nullptr) bv = *reinterpret_cast<const Chunk16<T>*>(bias + c0);
+#pragma unroll
+      for (int e = 0; e < kV; ++e) {
+        float s = to_float(xv.v[e]) + to_float(rv.v[e]);
+        if (bias != nullptr) s += to_float(bv.v[e]);
+        sv.v[e] = ccml::detail::from_float<T>(s);
+        d[j][e] = to_float(sv.v[e]) - pivot;
+        sum += d[j][e];
+      }
+      if (sum_out != nullptr) *reinterpret_cast<Chunk16<T>*>(sum_out + base + c0) = sv;
+    } else {
+#pragma unroll
+      for (int e = 0; e < kV; ++e) d[j][e] = 0.0f;
+    }
+  }
+  const float mean = warp_sum(sum) / static_cast<float>(cols);
+  float sq = 0.0f;
+#pragma unroll
+  for (int j = 0; j < kChunks; ++j) {
+    if ((lane + 32 * j) * kV < cols) {
+#pragma unroll
+      for (int e = 0; e < kV; ++e) {
+        const float dev = d[j][e] - mean;
+        sq += dev * dev;
+      }
+    }
+  }
+  const float rstd = 1.0f / sqrtf(warp_sum(sq) / static_cast<float>(cols) + eps);
+#pragma unroll
+  for (int j = 0; j < kChunks; ++j) {
+    const int c0 = (lane + 32 * j) * kV;
+    if (c0 < cols) {
+      Chunk16<T> g, b, out;
+      if (gamma != nullptr) g = *reinterpret_cast<const Chunk16<T>*>(gamma + c0);
+      if (beta != nullptr) b = *reinterpret_cast<const Chunk16<T>*>(beta + c0);
+#pragma unroll
+      for (int e = 0; e < kV; ++e) {
+        float v = (d[j][e] - mean) * rstd;
+        if (gamma != nullptr) v *= to_float(g.v[e]);
+        if (beta != nullptr) v += to_float(b.v[e]);
+        out.v[e] = ccml::detail::from_float<T>(v);
+      }
+      *reinterpret_cast<Chunk16<T>*>(y + base + c0) = out;
+    }
+  }
+}
+
 }  // namespace kernels
 }  // namespace ccml
 

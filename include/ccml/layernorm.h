@@ -84,6 +84,37 @@ CCML_API ccml_status ccml_layernorm_bf16(ccml_bf16*       y,
                                          ccml_layernorm_algo algo,
                                          cudaStream_t     stream);
 
+/*
+ * Fused residual + bias + layer norm (pre-LN transformer block):
+ *
+ *   s = round_to_T(x + residual + bias)       (FP32 math, one rounding)
+ *   y = layernorm(s) * gamma + beta
+ *
+ * x, residual, y, sum_out : [rows, cols]; bias, gamma, beta : [cols] or NULL;
+ * sum_out NULL skips writing s. The norm is of the rounded s, so y equals a
+ * separate add kernel followed by ccml_layernorm. sum_out must not alias x or
+ * residual. algo: VECTORIZED (cols <= 1024, 128-bit; other widths or
+ * alignments run the WELFORD kernel), WELFORD (any width), or AUTO; others
+ * return CCML_ERROR_NOT_IMPLEMENTED.
+ */
+CCML_API ccml_status ccml_layernorm_residual_f32(float* y, float* sum_out, const float* x,
+                                                 const float* residual, const float* bias,
+                                                 const float* gamma, const float* beta,
+                                                 int rows, int cols, float eps,
+                                                 ccml_layernorm_algo algo, cudaStream_t stream);
+CCML_API ccml_status ccml_layernorm_residual_f16(ccml_f16* y, ccml_f16* sum_out,
+                                                 const ccml_f16* x, const ccml_f16* residual,
+                                                 const ccml_f16* bias, const ccml_f16* gamma,
+                                                 const ccml_f16* beta, int rows, int cols,
+                                                 float eps, ccml_layernorm_algo algo,
+                                                 cudaStream_t stream);
+CCML_API ccml_status ccml_layernorm_residual_bf16(ccml_bf16* y, ccml_bf16* sum_out,
+                                                  const ccml_bf16* x, const ccml_bf16* residual,
+                                                  const ccml_bf16* bias, const ccml_bf16* gamma,
+                                                  const ccml_bf16* beta, int rows, int cols,
+                                                  float eps, ccml_layernorm_algo algo,
+                                                  cudaStream_t stream);
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif

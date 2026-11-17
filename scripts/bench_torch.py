@@ -95,6 +95,30 @@ def setup(op: str, shape: dict, impls: list[str], mode: str, dtype: str = "f32")
 
     rows, cols = shape["rows"], shape["cols"]
     x = torch.randn(rows, cols, device="cuda", generator=g)
+    if op == "layernorm_residual":
+        # LN(x + r + b), the unfused PyTorch way (an add, then F.layer_norm).
+        # Reference: fp64 layer norm of the sum PyTorch itself formed in the
+        # storage dtype, so each implementation is judged on its own rounded s.
+        r = torch.randn(rows, cols, device="cuda", generator=g)
+        bvec = torch.randn(cols, device="cuda", generator=g) * 0.5
+        w = torch.rand(cols, device="cuda", generator=g) + 0.5
+        bias = torch.rand(cols, device="cuda", generator=g) * 2 - 1
+        x, r, bvec, w, bias = (t.to(TORCH_DTYPE[dtype]) for t in (x, r, bvec, w, bias))
+        s = x + r + bvec
+        ref = F.layer_norm(s.double(), (cols,), w.double(), bias.double(), EPS)
+        tol = bl.widen_for_storage(bl.tolerance_reduction(cols), dtype)
+
+        def eager():
+            return F.layer_norm(x + r + bvec, (cols,), w, bias, EPS)
+        if "eager" in impls:
+            cands.append(bl.Candidate("pytorch_eager", "add+F.layer_norm", eager))
+        if "compile" in impls:
+            cf = compiled(lambda a, rr, bb, ww, be: F.layer_norm(a + rr + bb, (cols,), ww, be,
+                                                                 EPS), mode)
+            cands.append(bl.Candidate("torch_compile", mode, lambda: cf(x, r, bvec, w, bias)))
+        nbytes = float(4 * rows * cols + 3 * cols) * ELEM_BYTES[dtype]
+        return ref, tol, 0.0, nbytes, cands
+
     if op == "layernorm":
         w = torch.rand(cols, device="cuda", generator=g) + 0.5
         bias = torch.rand(cols, device="cuda", generator=g) * 2 - 1
@@ -173,9 +197,10 @@ def main() -> int:
                       f"{'NVML' if tel.ok else 'unavailable'}; other compute processes: "
                       f"{tel.other_processes()}\n")
             out.write(bl.CSV_HEADER + "\n")
-            dtypes = {"matmul": args.matmul_dtypes,
-                      "layernorm": args.layernorm_dtypes}.get(op, "f32").split(",")
-            for shape, dtype in ((s, d) for s in shapes[op] for d in dtypes):
+            dtypes = {"matmul": args.matmul_dtypes, "layernorm": args.layernorm_dtypes,
+                      "layernorm_residual": args.layernorm_dtypes}.get(op, "f32").split(",")
+            shape_list = shapes["layernorm" if op == "layernorm_residual" else op]
+            for shape, dtype in ((s, d) for s in shape_list for d in dtypes):
                 if args.filter and args.filter not in shape["tag"]:
                     continue
                 t0 = time.time()

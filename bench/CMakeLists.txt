@@ -53,7 +53,8 @@ endif()
 add_library(ccml_bench_baselines STATIC
   baselines/cublas.cpp
   baselines/cudnn_softmax.cpp
-  baselines/epilogue.cu)
+  baselines/epilogue.cu
+  baselines/residual_add.cu)
 set_target_properties(ccml_bench_baselines PROPERTIES
   CUDA_ARCHITECTURES "${CCML_CUDA_ARCHITECTURES}")
 target_include_directories(ccml_bench_baselines PUBLIC ${PROJECT_SOURCE_DIR})
@@ -86,6 +87,10 @@ endforeach()
 # Fused linear epilogue (enhancements F1, F4, B2).
 add_executable(ccml_bench_matmul_epilogue bench_matmul_epilogue.cpp)
 target_link_libraries(ccml_bench_matmul_epilogue PRIVATE ccml_bench_support ccml_bench_baselines)
+
+# Fused residual + layer norm vs separate kernels (enhancements F2, F4).
+add_executable(ccml_bench_layernorm_residual bench_layernorm_residual.cpp)
+target_link_libraries(ccml_bench_layernorm_residual PRIVATE ccml_bench_support ccml_bench_baselines)
 
 add_executable(ccml_bench_peaks bench_peaks.cu)
 target_link_libraries(ccml_bench_peaks PRIVATE ccml_bench_support)

@@ -152,6 +152,84 @@ ccml_status layernorm(Public* y_pub, const Public* x_pub, const Public* gamma_pu
   }
 }
 
+/* ------------------------------------------ fused residual + bias --- */
+
+template <typename T, int kChunks>
+ccml_status launch_res_vec(T* y, T* s, const T* x, const T* r, const T* b, const T* g,
+                           const T* be, int rows, int cols, float eps, cudaStream_t stream) {
+  constexpr int kRows = ccml::kernels::kRowsPerBlock;
+  ccml::detail::LaunchConfig config;
+  config.block = dim3(32 * kRows, 1, 1);
+  config.grid = dim3(static_cast<unsigned>((rows + kRows - 1) / kRows), 1, 1);
+  void (*const layernorm_residual_vectorized)(T*, T*, const T*, const T*, const T*, const T*,
+                                              const T*, int, int, float) =
+      &ccml::kernels::layernorm_residual_vectorized<T, kChunks>;
+  CCML_LAUNCH(layernorm_residual_vectorized, config, stream, y, s, x, r, b, g, be, rows, cols,
+              eps);
+  return CCML_SUCCESS;
+}
+
+template <typename T>
+ccml_status launch_res_welford(T* y, T* s, const T* x, const T* r, const T* b, const T* g,
+                               const T* be, int rows, int cols, float eps,
+                               cudaStream_t stream) {
+  const ccml::detail::LaunchConfig config = ccml::detail::rowwise_launch_config(
+      rows, cols, ccml::kernels::kLayerNormBlockSize);
+  CCML_LAUNCH(ccml::kernels::layernorm_residual_welford<T>, config, stream, y, s, x, r, b, g, be,
+              rows, cols, eps);
+  return CCML_SUCCESS;
+}
+
+template <typename Public>
+ccml_status layernorm_residual(Public* y_pub, Public* s_pub, const Public* x_pub,
+                               const Public* r_pub, const Public* b_pub, const Public* g_pub,
+                               const Public* be_pub, int rows, int cols, float eps,
+                               ccml_layernorm_algo algo, cudaStream_t stream) {
+  using T = ccml::detail::device_t<Public>;
+  ccml::detail::clear_last_error();
+  const ccml_status valid = validate(y_pub, x_pub, rows, cols, eps);
+  if (valid != CCML_SUCCESS) return valid;
+  const std::string fn =
+      std::string("ccml_layernorm_residual_") + ccml::detail::dtype_suffix<Public>();
+  CCML_REQUIRE(r_pub != nullptr, CCML_ERROR_INVALID_ARGUMENT, (fn + ": residual is null").c_str());
+  CCML_REQUIRE(s_pub == nullptr || (static_cast<const void*>(s_pub) != x_pub &&
+                                    static_cast<const void*>(s_pub) != r_pub),
+               CCML_ERROR_INVALID_ARGUMENT,
+               (fn + ": sum_out must not alias x or residual").c_str());
+  T* y = ccml::detail::device_ptr(y_pub);
+  T* s = ccml::detail::device_ptr(s_pub);
+  const T* x = ccml::detail::device_ptr(x_pub);
+  const T* r = ccml::detail::device_ptr(r_pub);
+  const T* b = ccml::detail::device_ptr(b_pub);
+  const T* g = ccml::detail::device_ptr(g_pub);
+  const T* be = ccml::detail::device_ptr(be_pub);
+  if (algo == CCML_LAYERNORM_AUTO) {
+    algo = cols <= 1024 ? CCML_LAYERNORM_VECTORIZED : CCML_LAYERNORM_WELFORD;
+  }
+  switch (algo) {
+    case CCML_LAYERNORM_VECTORIZED: {
+      constexpr int kV = static_cast<int>(16 / sizeof(T));
+      const bool vec = cols <= 1024 && cols % kV == 0 && aligned16(y) && aligned16(x) &&
+                       aligned16(r) && (s == nullptr || aligned16(s)) &&
+                       (b == nullptr || aligned16(b)) && (g == nullptr || aligned16(g)) &&
+                       (be == nullptr || aligned16(be));
+      /* Otherwise the block-per-row kernel computes the identical result. */
+      if (!vec) return launch_res_welford(y, s, x, r, b, g, be, rows, cols, eps, stream);
+      const int chunks = (cols / kV + 31) / 32;
+      if (chunks <= 1) return launch_res_vec<T, 1>(y, s, x, r, b, g, be, rows, cols, eps, stream);
+      if (chunks <= 2) return launch_res_vec<T, 2>(y, s, x, r, b, g, be, rows, cols, eps, stream);
+      if (chunks <= 4) return launch_res_vec<T, 4>(y, s, x, r, b, g, be, rows, cols, eps, stream);
+      return launch_res_vec<T, 8>(y, s, x, r, b, g, be, rows, cols, eps, stream);
+    }
+    case CCML_LAYERNORM_WELFORD:
+      return launch_res_welford(y, s, x, r, b, g, be, rows, cols, eps, stream);
+    default:
+      ccml::detail::set_last_error(
+          (fn + ": the fused residual exists for VECTORIZED and WELFORD only").c_str());
+      return CCML_ERROR_NOT_IMPLEMENTED;
+  }
+}
+
 }  // namespace
 
 extern "C" {
@@ -186,6 +264,33 @@ ccml_status ccml_layernorm_bf16(ccml_bf16* y, const ccml_bf16* x,
                                 int rows, int cols, float eps,
                                 ccml_layernorm_algo algo, cudaStream_t stream) {
   return layernorm(y, x, gamma, beta, rows, cols, eps, algo, stream);
+}
+
+ccml_status ccml_layernorm_residual_f32(float* y, float* sum_out, const float* x,
+                                        const float* residual, const float* bias,
+                                        const float* gamma, const float* beta, int rows, int cols,
+                                        float eps, ccml_layernorm_algo algo,
+                                        cudaStream_t stream) {
+  return layernorm_residual(y, sum_out, x, residual, bias, gamma, beta, rows, cols, eps, algo,
+                            stream);
+}
+
+ccml_status ccml_layernorm_residual_f16(ccml_f16* y, ccml_f16* sum_out, const ccml_f16* x,
+                                        const ccml_f16* residual, const ccml_f16* bias,
+                                        const ccml_f16* gamma, const ccml_f16* beta, int rows,
+                                        int cols, float eps, ccml_layernorm_algo algo,
+                                        cudaStream_t stream) {
+  return layernorm_residual(y, sum_out, x, residual, bias, gamma, beta, rows, cols, eps, algo,
+                            stream);
+}
+
+ccml_status ccml_layernorm_residual_bf16(ccml_bf16* y, ccml_bf16* sum_out, const ccml_bf16* x,
+                                         const ccml_bf16* residual, const ccml_bf16* bias,
+                                         const ccml_bf16* gamma, const ccml_bf16* beta, int rows,
+                                         int cols, float eps, ccml_layernorm_algo algo,
+                                         cudaStream_t stream) {
+  return layernorm_residual(y, sum_out, x, residual, bias, gamma, beta, rows, cols, eps, algo,
+                            stream);
 }
 
 }  // extern "C"

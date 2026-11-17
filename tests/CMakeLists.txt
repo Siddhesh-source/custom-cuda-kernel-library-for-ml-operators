@@ -48,6 +48,7 @@ ccml_add_test(harness        test_harness.cpp)        # tests the test harness
 # softmax alone.
 ccml_add_test(matmul    test_matmul.cpp)
 ccml_add_test(layernorm test_layernorm.cpp)
+ccml_add_test(layernorm_residual test_layernorm_residual.cpp)
 ccml_add_test(softmax   test_softmax.cpp)
 
 # FP16 and BF16 storage for all three operators (reference.md section 3).

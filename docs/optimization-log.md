@@ -1489,7 +1489,8 @@ profile (equal bytes, 1.16x) are the comparisons that hold.
 
 ## 12. Layernorm: fused residual + bias (enhancement F2; `ccml_layernorm_residual_<dtype>`)
 
-**Status:** hypothesis committed before the code.
+**Status:** implemented and correct (FP32, FP16, BF16). Local sm_89 evidence
+below (mixed); the T4, whose 4 MB L2 cannot hold the intermediate, decides.
 
 ### Hypothesis
 
@@ -1528,3 +1529,74 @@ width); AUTO picks by width.
 which would mean the extra residual read and sum write per element push the
 fused kernel off the bandwidth limit (registers, occupancy) or the separate
 pipeline's s was served by L2 (only possible when s fits in L2).
+
+### Change
+
+- `residual_sum`, `layernorm_residual_welford<T>` (block per row, any width)
+  and `layernorm_residual_vectorized<T, kChunks>` (VECTORIZED with the sum in
+  front) in `src/layernorm/layernorm_kernels.cuh`;
+  `ccml_layernorm_residual_f32/f16/bf16` in `include/ccml/layernorm.h`.
+  VECTORIZED falls back to the Welford kernel when its width or alignment
+  preconditions fail; AUTO picks VECTORIZED for cols <= 1024.
+- Tests: new suite `layernorm_residual` (10 shapes x {bias, no bias} x
+  {sum_out, none} x {VECTORIZED, WELFORD, AUTO} x 3 dtypes, plus offset and
+  misaligned cases; argument checks). `sum_out` is checked **bitwise** against
+  the host's FP32 (x + r) + b rounded once; y against fp64 LN of that rounded
+  s. Worst normalized error 0.040 (FP32), 0.49 (FP16, BF16).
+- Bench: `ccml_bench_layernorm_residual` (fused vs `residual_add` kernel +
+  plain layer norm); `bench_torch.py --ops layernorm_residual` (eager:
+  add + `F.layer_norm`; torch.compile).
+
+### Evidence
+
+**Timings, local sm_89 (indicative), median of 200**
+(`results/sm_89/layernorm_residual.csv`; ratio = best separate / best fused,
+> 1 means fused is faster):
+
+| Shape | FP16 warm | FP16 cold | FP32 warm | FP32 cold |
+|---|---|---|---|---|
+| 8192 x 768 | **1.17x** | **1.15x** | **1.25x** | (warm only) |
+| 8192 x 4096 | 1.17x | - | **1.25x** | - |
+| 4096 x 1000 | 1.07x | 1.03x | **1.23x** | **1.19x** |
+| 2048 x 768 | **2.71x** | 0.97x | **0.91x (loss)** | **0.94x (loss)** |
+| 512 x 768 | **2.12x** | 1.18x | **2.08x** | **0.94x (loss)** |
+| 128 x 768 | **1.80x** | **1.58x** | **1.83x** | 1.20x |
+| 128 x 3079 | 1.33x | 0.96x | 1.43x | **0.89x (loss)** |
+| 16 x 4096 | 1.32x | 1.05x | 1.33x | **0.83x (loss)** |
+| 1 x 768 | 1.40x | 1.50x | 1.33x | 1.29x |
+
+**Nsight Compute, local sm_89, FP32** (`profiles/sm_89/layernorm/fused_vs_separate_*`;
+the separate pipeline's layer norm kernel shown; its add kernel is not in the
+profile):
+
+| Metric (512 x 768 / 8192 x 768) | fused vectorized | fused welford | plain vectorized (separate's 2nd kernel) |
+|---|---|---|---|
+| Duration under the profiler | 34.9 / 900 us | 36.6 / **789 us** | 18.6 / 337 us |
+| DRAM bytes read | 3.18 / 59.0 MB | 3.18 / 50.4 MB | 1.60 / 25.2 MB |
+| Registers; warps active | 62; 60% | 40; **93%** | 64; 61% |
+| Stall long_scoreboard (per issue) | 93.2 / 140 | 5.0 / 13.8 | 51.0 / 54.7 |
+| DRAM throughput, % of peak | 87.4% / 87.8% | 68.1% / 91.5% | 67.4% / 90.9% |
+
+### Verdict
+
+**Kept**, with a measured caveat; AUTO for the fused op is set from the T4.
+
+1. DRAM-bound rows >= 2048: 1.2-1.3x: **met where the intermediate leaves
+   L2** (8192 and 4096 rows: 1.17-1.31x warm, 1.15-1.19x cold), **falsified
+   where it does not**: FP32 2048 x 768/1024, 6-8 MB per tensor, fits sm_89's
+   32 MB L2, so the separate pipeline's s never reaches DRAM and fusion only
+   saves a launch (0.91-0.98x). This is the falsification clause's second
+   case, and it is specific to a large L2: on the T4 (4 MB) the same shapes
+   spill s to DRAM.
+2. Small shapes 1.3-1.8x: **met warm** (1.3-2.7x); **cold, FP32 loses at
+   16-512 rows** (0.83-0.94x). With a flushed L2, the fused kernel must fetch x
+   and r at once with 60% of warps active (long_scoreboard 93 per issue);
+   the separate add kernel is a simpler streaming kernel at full occupancy.
+4. sum_out bitwise equal: **met.**
+3. (vs PyTorch) is measured in the T4 run only.
+
+**Two findings for AUTO:** (a) at DRAM-bound sizes the fused **WELFORD**
+kernel beats the fused VECTORIZED one (789 vs 900 us at 8192 x 768: 93% of
+warps active against 60%), so the fused op should not simply follow the
+plain op's choice; (b) the fused VECTORIZED kernel reads 59 MB where 50 MB is
+the minimum (x + r at 8192 x 768); the extra 9 MB is **not explained** yet.

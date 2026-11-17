@@ -81,6 +81,15 @@ run_op() {
     "$BIN/ccml_bench_$op" --peaks "$peaks" --out "$RES/$op.csv" "${extra[@]}" \
       2> "$OUT/logs/bench_$op.log"
     echo "exit $?"; tail -3 "$OUT/logs/bench_$op.log"
+    if [ "$op" = "layernorm" ] && [ -x "$BIN/ccml_bench_layernorm_residual" ]; then
+      step "C++ bench: fused residual + layer norm (F2 / F4)"
+      local rimpls=()
+      [ "$IMPLS" != "all" ] && rimpls=(--impls "$IMPLS")
+      "$BIN/ccml_bench_layernorm_residual" --peaks "$peaks" --out "$RES/layernorm_residual.csv" \
+        --dtype "${CCML_ROWWISE_DTYPES:-f32,f16,bf16}" "${rimpls[@]}" \
+        2> "$OUT/logs/bench_layernorm_residual.log"
+      echo "exit $?"; tail -3 "$OUT/logs/bench_layernorm_residual.log"
+    fi
     if [ "$op" = "matmul" ] && [ -x "$BIN/ccml_bench_matmul_epilogue" ]; then
       step "C++ bench: fused matmul epilogue (F1 / B2)"
       local eimpls=()
@@ -101,7 +110,9 @@ run_op() {
     local mode=max-autotune
     [ "$op" = "matmul" ] && mode=default
     step "Python baselines: $op (${py_impls[*]}, compile mode $mode)"
-    "$PY" "$SRC/scripts/bench_torch.py" --out-dir "$RES" --peaks "$peaks" --ops "$op" \
+    local ops="$op"
+    [ "$op" = "layernorm" ] && ops="layernorm,layernorm_residual"
+    "$PY" "$SRC/scripts/bench_torch.py" --out-dir "$RES" --peaks "$peaks" --ops "$ops" \
       --impls "$(IFS=,; echo "${py_impls[*]}")" --compile-mode "$mode" \
       --matmul-dtypes "${CCML_MATMUL_DTYPES:-f32,f16,bf16}" \
       --layernorm-dtypes "${CCML_ROWWISE_DTYPES:-f32,f16,bf16}" \
