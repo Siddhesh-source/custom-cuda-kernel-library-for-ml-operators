@@ -20,6 +20,7 @@ in this directory.
 | 4 — Library consolidation | [phase-4-library-refactor.md](phase-4-library-refactor.md) | 64/64 passed; duplication removed, one-command build and test |
 | 5 — PyTorch interface | [phase-5-pytorch-interface.md](phase-5-pytorch-interface.md) | 31/31 Python tests; zero-copy CUDA tensors on torch's stream |
 | 6 — Matmul + case study | [phase-6-case-study.md](phase-6-case-study.md) | All 3 operators correct; **2-11x slower than PyTorch**; matmul at 8.6% of fp32 peak |
+| 8 — FP16 and BF16 | [phase-8-multi-dtype.md](phase-8-multi-dtype.md) | All operators in FP16/BF16; ctest 7/7, pytest 68/68 (torch fp64), sanitizer 24/24 clean on T4 |
 | 7 — Measurement infrastructure | [phase-7-measurement-infrastructure.md](phase-7-measurement-infrastructure.md) | Spec harness + all baselines on T4; sanitizer clean; 9 measurement defects found and fixed; baseline: ours 0.17-0.31x of best |
 
 ## Provenance note
