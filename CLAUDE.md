@@ -16,7 +16,7 @@
 - Run compute-sanitizer (memcheck and racecheck) on every new kernel.
 - Never invent a number. Every figure comes from a committed script and its committed output.
 - One optimization per step. Log it in `docs/optimization-log.md` with its hypothesis, NCU evidence (`profiles/`) and measured delta. Failed attempts are logged too.
-- Never mix results from different architectures in one table. The target is the Kaggle T4 (sm_75).
+- Never mix results from different architectures in one table. Results are filed under the architecture that produced them (`results/sm_<cc>/`); the T4 (sm_75) is the preferred target, not a requirement (see Kaggle runs below).
 
 ## Phase workflow
 Each phase ends with tests in `tests/`, a results document `docs/results/phase-N-<name>.md` (environment, verbatim output, what it proves and what it does not, how to reproduce), an update to the ROADMAP checklist, and then a commit and push.
@@ -29,10 +29,14 @@ Each phase ends with tests in `tests/`, a results document `docs/results/phase-N
 ## Build and test
 ```
 cmake --workflow --preset default        # configure + build + ctest (sm_75)
-python cloud/kaggle/kaggle_run.py          # run everything on a Kaggle T4
+python cloud/kaggle/kaggle_run.py --any-gpu   # run everything on Kaggle (always --any-gpu)
 ctest --preset default -R <op>
 ```
-Hardware: **every GPU task runs on a Kaggle T4 (sm_75)** via `cloud/kaggle/`. Credentials are already configured. Batch the work into one kernel run per phase to save quota. Only the items in `docs/local.md` need a local GPU; never plan local work outside that list. The local machine cannot build CUDA (no Windows SDK) and its PyTorch is CPU-only.
+Hardware: **every GPU task runs on Kaggle** via `cloud/kaggle/`.
+
+**Kaggle runs: always pass `--any-gpu`** (user decision, 2026-11-17): never wait in the T4 queue. The kernel builds for the GPU it gets and the job files results under that GPU's architecture (`results/sm_<cc>/`, `peaks.json`, env file name the GPU). A comparison table holds rows from one session on one GPU only, and a results doc names the GPU and architecture it was produced on. If a run lands on a non-T4 GPU, say so in the phase results doc; do not relabel it as T4. A session already queued can be stopped with `python -m kaggle kernels delete <owner>/<slug> -y` (frees its GPU slot).
+
+Credentials are already configured. Batch the work into one kernel run per phase to save quota. Only the items in `docs/local.md` need a local GPU; never plan local work outside that list. The local machine cannot build CUDA (no Windows SDK) and its PyTorch is CPU-only.
 
 ## Git
 - **Branches:** `main` holds only finished work and receives exactly one merge, `dev` → `main`, when the whole project is complete. `dev` is the integration branch. All work happens on a **task branch** cut from `dev`. A task branch may cover one or several phases, and it is merged back into `dev` once its phases pass ACCEPT.
