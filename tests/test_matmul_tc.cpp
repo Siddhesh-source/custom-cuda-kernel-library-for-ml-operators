@@ -87,7 +87,7 @@ struct BF16 {
 };
 
 /* Every Tensor Core variant; a new one is added here and inherits every test. */
-const ccml_matmul_algo kTcAlgos[] = {CCML_MATMUL_WMMA};
+const ccml_matmul_algo kTcAlgos[] = {CCML_MATMUL_WMMA, CCML_MATMUL_MMA_SYNC};
 
 /* Owning device array of 16-bit elements, with `extra` elements of slack so a
    view can start at an offset. */

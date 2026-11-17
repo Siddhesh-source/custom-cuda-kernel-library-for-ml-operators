@@ -33,8 +33,9 @@ CCML_API int ccml_matmul_tile_config_count(void);
 CCML_API ccml_status ccml_matmul_tile_config_get(int index, ccml_matmul_tile_config* out);
 
 /* Tensor Core tile configurations: a BM x BN x BK block tile computed by
-   (bm/wm) x (bn/wn) warps, each owning a wm x wn warp tile. Index 0 is what
-   the algo enum uses. */
+   (bm/wm) x (bn/wn) warps, each owning a wm x wn warp tile. The algo enum
+   uses index 0 for CCML_MATMUL_WMMA and index 1 for CCML_MATMUL_MMA_SYNC
+   (docs/optimization-log.md, entry 5). */
 typedef struct ccml_matmul_tc_config {
   int bm, bn, bk;  /* block tile */
   int wm, wn;      /* warp tile */
@@ -50,7 +51,7 @@ CCML_API ccml_status ccml_matmul_tc_config_get(int index, ccml_matmul_tc_config*
    (every configuration), CCML_MATMUL_VECTORIZED and
    CCML_MATMUL_DOUBLE_BUFFERED (configurations whose TM, TN and BK are
    multiples of 4; others return CCML_ERROR_INVALID_ARGUMENT). For the Tensor
-   Core family (CCML_MATMUL_WMMA) it is into the Tensor Core configurations.
+   Core family (CCML_MATMUL_WMMA, CCML_MATMUL_MMA_SYNC) it is into the Tensor Core configurations.
    Same contract as ccml_matmul_<dtype>. */
 CCML_API ccml_status ccml_matmul_tuned_f32(float* C, const float* A, const float* B, int M,
                                            int N, int K, ccml_matmul_algo algo, int index,

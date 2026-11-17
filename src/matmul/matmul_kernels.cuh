@@ -869,6 +869,318 @@ matmul_wmma(T* C, const T* A, const T* B, int M, int N, int K) {
   }
 }
 
+/* ------------------------------------------------- mma.sync + ldmatrix -- */
+
+/* m16n8k8 with FP32 accumulation exists for FP16 from sm_75 and for BF16 from
+   sm_80. */
+template <typename T>
+struct MmaSyncAvailable : std::false_type {};
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 750
+template <>
+struct MmaSyncAvailable<__half> : std::true_type {};
+#endif
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
+template <>
+struct MmaSyncAvailable<__nv_bfloat16> : std::true_type {};
+#endif
+
+/* XOR swizzle for a row-major shared tile of 16-bit elements whose rows hold
+   `kChunks` 16-byte chunks. Chunk c of row r is stored at chunk
+   c ^ swizzle(r): consecutive rows that share a 128-byte line are spread so
+   that the 8 rows one ldmatrix phase reads (same logical chunk, rows r..r+7)
+   land in 8 distinct groups of 4 banks. The XOR stays inside the row's aligned
+   group of min(kChunks, 8) chunks, so 8 consecutive 16-byte stores to one row
+   (or to the rows of one 128-byte line) still cover 128 contiguous bytes. */
+template <int kChunks>
+__device__ __forceinline__ int swizzle_chunk(int row, int chunk) {
+  constexpr int kGroup = kChunks < 8 ? kChunks : 8;
+  constexpr int kRowsPerLine = kChunks < 8 ? 8 / kChunks : 1;
+  return chunk ^ ((row / kRowsPerLine) % kGroup);
+}
+
+__device__ __forceinline__ unsigned smem_addr(const void* p) {
+  return static_cast<unsigned>(__cvta_generic_to_shared(p));
+}
+
+template <typename T>
+__device__ __forceinline__ void mma_m16n8k8(float (&d)[4], unsigned a0, unsigned a1, unsigned b0);
+
+template <>
+__device__ __forceinline__ void mma_m16n8k8<__half>(float (&d)[4], unsigned a0, unsigned a1,
+                                                    unsigned b0) {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 750
+  /* Not volatile: a pure function of its registers, so the compiler may
+     schedule fragment loads around it. */
+  asm(
+      "mma.sync.aligned.m16n8k8.row.col.f32.f16.f16.f32 {%0,%1,%2,%3}, {%4,%5}, {%6}, "
+      "{%0,%1,%2,%3};\n"
+      : "+f"(d[0]), "+f"(d[1]), "+f"(d[2]), "+f"(d[3])
+      : "r"(a0), "r"(a1), "r"(b0));
+#endif
+}
+
+template <>
+__device__ __forceinline__ void mma_m16n8k8<__nv_bfloat16>(float (&d)[4], unsigned a0,
+                                                           unsigned a1, unsigned b0) {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
+  /* Not volatile: a pure function of its registers, so the compiler may
+     schedule fragment loads around it. */
+  asm(
+      "mma.sync.aligned.m16n8k8.row.col.f32.bf16.bf16.f32 {%0,%1,%2,%3}, {%4,%5}, {%6}, "
+      "{%0,%1,%2,%3};\n"
+      : "+f"(d[0]), "+f"(d[1]), "+f"(d[2]), "+f"(d[3])
+      : "r"(a0), "r"(a1), "r"(b0));
+#endif
+}
+
+__device__ __forceinline__ void ldmatrix_x4(unsigned (&r)[4], unsigned addr) {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 750
+  asm volatile("ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%0,%1,%2,%3}, [%4];\n"
+               : "=r"(r[0]), "=r"(r[1]), "=r"(r[2]), "=r"(r[3])
+               : "r"(addr));
+#endif
+}
+
+__device__ __forceinline__ void ldmatrix_x4_trans(unsigned (&r)[4], unsigned addr) {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 750
+  asm volatile("ldmatrix.sync.aligned.m8n8.x4.trans.shared.b16 {%0,%1,%2,%3}, [%4];\n"
+               : "=r"(r[0]), "=r"(r[1]), "=r"(r[2]), "=r"(r[3])
+               : "r"(addr));
+#endif
+}
+
+/* Two adjacent outputs (row, col) and (row, col + 1), rounded to T,
+   bounds-checked; one 32-bit store when kVec (N even and C aligned, so col,
+   which is even, is 4-byte aligned) and both are inside the matrix. */
+template <typename T, bool kVec>
+__device__ __forceinline__ void store_pair(T* C, int M, int N, int row, int col, float v0,
+                                           float v1) {
+  if (row >= M) return;
+  T* dst = C + static_cast<long long>(row) * N + col;
+  const T x0 = ccml::detail::from_float<T>(v0);
+  const T x1 = ccml::detail::from_float<T>(v1);
+  if (kVec && col + 1 < N) {
+    struct alignas(4) Pair {
+      T a, b;
+    };
+    *reinterpret_cast<Pair*>(dst) = Pair{x0, x1};
+  } else {
+    if (col < N) dst[0] = x0;
+    if (col + 1 < N) dst[1] = x1;
+  }
+}
+
+/*
+ * MMA_SYNC (docs/optimization-log.md, entry 5): entry 4's tiling and
+ * register-prefetch double buffering, with the inner product in PTX.
+ *
+ *  - Shared tiles As[2][BM][BK] and Bs[2][BK][BN], row-major, unpadded, with
+ *    16-byte chunks XOR-swizzled (swizzle_chunk) so ldmatrix reads and the
+ *    128-bit stash stores are both conflict-free.
+ *  - Per k16 slice: one ldmatrix.x4 per 16-row A tile (operands of two k8
+ *    steps) and one ldmatrix.x4.trans per pair of 8-column B tiles; then
+ *    mma.sync m16n8k8 for every (16-row, 8-column) tile of the warp, twice.
+ *  - Epilogue straight from the accumulators. Fragment layout (PTX ISA,
+ *    m16n8 f32 accumulator): lane l holds rows l/4 and l/4 + 8, columns
+ *    2*(l%4) and 2*(l%4) + 1.
+ *
+ *   grid  = (div_up(N, BN), div_up(M, BM))
+ *   block = (BM/WM) * (BN/WN) warps
+ */
+template <typename T, int BM, int BN, int BK, int WM, int WN, bool kVec>
+__global__ void __launch_bounds__((BM / WM) * (BN / WN) * 32, 2)
+matmul_mma_sync(T* C, const T* A, const T* B, int M, int N, int K) {
+  if constexpr (MmaSyncAvailable<T>::value) {
+    constexpr int kWarpsN = BN / WN;
+    constexpr int kThreads = (BM / WM) * kWarpsN * 32;
+    constexpr int kTilesM = WM / 16; /* m16 tiles per warp */
+    constexpr int kTilesN = WN / 8;  /* n8 tiles per warp */
+    constexpr int kChunksRowA = BK / 8;
+    constexpr int kChunksRowB = BN / 8;
+    constexpr int kStageA = BM * BK;
+    constexpr int kStageB = BK * BN;
+    constexpr int kChunksA = BM * kChunksRowA;
+    constexpr int kChunksB = BK * kChunksRowB;
+    constexpr int kPerThreadA = (kChunksA + kThreads - 1) / kThreads;
+    constexpr int kPerThreadB = (kChunksB + kThreads - 1) / kThreads;
+    static_assert(WM % 16 == 0 && WN % 16 == 0 && BK % 16 == 0 && BM % WM == 0 &&
+                      BN % WN == 0,
+                  "mma.sync tiles: WM, WN, BK multiples of 16");
+
+    __shared__ __align__(128) unsigned short smem[2 * (kStageA + kStageB)];
+    unsigned short* const As = smem;
+    unsigned short* const Bs = smem + 2 * kStageA;
+
+    const unsigned short* const Ar = reinterpret_cast<const unsigned short*>(A);
+    const unsigned short* const Br = reinterpret_cast<const unsigned short*>(B);
+    const int tid = static_cast<int>(threadIdx.x);
+    const int warp = tid / 32;
+    const int lane = tid % 32;
+    const int warp_row = (warp / kWarpsN) * WM;
+    const int warp_col = (warp % kWarpsN) * WN;
+    const int block_row = static_cast<int>(blockIdx.y) * BM;
+    const int block_col = static_cast<int>(blockIdx.x) * BN;
+
+    /* The chunks this thread moves, fixed for the whole K loop: its rows of A
+       (and whether they exist) and its columns of B (and whether they exist).
+       Only the K coordinate changes per step. Chunks are uint4 and zero-filled
+       whole: a 16-bit-element fill made the compiler rebuild every chunk with
+       byte permutes (entry 5, correction). */
+    /* A thread whose chunk index runs past the tile (small tiles, e.g. 16
+       rows of A over 128 threads) moves nothing for that slot. */
+    constexpr bool kAllA = kChunksA % kThreads == 0;
+    constexpr bool kAllB = kChunksB % kThreads == 0;
+    const unsigned short* a_src[kPerThreadA];
+    int a_col[kPerThreadA];
+    bool a_row_ok[kPerThreadA];
+    int a_dst[kPerThreadA];
+#pragma unroll
+    for (int p = 0; p < kPerThreadA; ++p) {
+      const int q = tid + p * kThreads;
+      const int r = q / kChunksRowA;
+      a_col[p] = (q % kChunksRowA) * 8;
+      a_row_ok[p] = block_row + r < M;
+      a_src[p] = Ar + static_cast<long long>(a_row_ok[p] ? block_row + r : 0) * K + a_col[p];
+      a_dst[p] = r * BK + swizzle_chunk<kChunksRowA>(r, q % kChunksRowA) * 8;
+    }
+    const unsigned short* b_src[kPerThreadB];
+    int b_row[kPerThreadB];
+    int b_col[kPerThreadB];
+    int b_dst[kPerThreadB];
+#pragma unroll
+    for (int p = 0; p < kPerThreadB; ++p) {
+      const int q = tid + p * kThreads;
+      b_row[p] = q / kChunksRowB;
+      b_col[p] = block_col + (q % kChunksRowB) * 8;
+      b_src[p] = Br + static_cast<long long>(b_row[p]) * N + (b_col[p] < N ? b_col[p] : 0);
+      b_dst[p] = b_row[p] * BN + swizzle_chunk<kChunksRowB>(b_row[p], q % kChunksRowB) * 8;
+    }
+
+    uint4 ra[kPerThreadA];
+    uint4 rb[kPerThreadB];
+    auto fetch = [&](int k0) {
+#pragma unroll
+      for (int p = 0; p < kPerThreadA; ++p) {
+        if (!kAllA && tid + p * kThreads >= kChunksA) continue;
+        const int col = k0 + a_col[p];
+        if (kVec) {
+          /* K % 8 == 0: col < K means the whole chunk is inside. */
+          ra[p] = (a_row_ok[p] && col < K) ? *reinterpret_cast<const uint4*>(a_src[p] + k0)
+                                            : make_uint4(0, 0, 0, 0);
+        } else {
+          Raw8 x;
+#pragma unroll
+          for (int j = 0; j < 8; ++j) {
+            x.v[j] = (a_row_ok[p] && col + j < K) ? a_src[p][k0 + j] : 0;
+          }
+          ra[p] = *reinterpret_cast<const uint4*>(&x);
+        }
+      }
+#pragma unroll
+      for (int p = 0; p < kPerThreadB; ++p) {
+        if (!kAllB && tid + p * kThreads >= kChunksB) continue;
+        const int row = k0 + b_row[p];
+        const unsigned short* src = b_src[p] + static_cast<long long>(k0) * N;
+        if (kVec) {
+          rb[p] = (row < K && b_col[p] < N) ? *reinterpret_cast<const uint4*>(src)
+                                            : make_uint4(0, 0, 0, 0);
+        } else {
+          Raw8 x;
+#pragma unroll
+          for (int j = 0; j < 8; ++j) x.v[j] = (row < K && b_col[p] + j < N) ? src[j] : 0;
+          rb[p] = *reinterpret_cast<const uint4*>(&x);
+        }
+      }
+    };
+    auto stash = [&](int buf) {
+#pragma unroll
+      for (int p = 0; p < kPerThreadA; ++p) {
+        if (!kAllA && tid + p * kThreads >= kChunksA) continue;
+        *reinterpret_cast<uint4*>(As + buf * kStageA + a_dst[p]) = ra[p];
+      }
+#pragma unroll
+      for (int p = 0; p < kPerThreadB; ++p) {
+        if (!kAllB && tid + p * kThreads >= kChunksB) continue;
+        *reinterpret_cast<uint4*>(Bs + buf * kStageB + b_dst[p]) = rb[p];
+      }
+    };
+
+    float acc[kTilesM][kTilesN][4];
+#pragma unroll
+    for (int i = 0; i < kTilesM; ++i) {
+#pragma unroll
+      for (int j = 0; j < kTilesN; ++j) {
+#pragma unroll
+        for (int e = 0; e < 4; ++e) acc[i][j][e] = 0.0f;
+      }
+    }
+
+    /* ldmatrix row assignment: lane -> matrix lane/8, row lane%8 of it. */
+    const int lm = lane >> 3;
+    const int lr = lane & 7;
+
+    fetch(0);
+    stash(0);
+    __syncthreads();
+
+    int buf = 0;
+    for (int k0 = 0; k0 < K; k0 += BK) {
+      const bool has_next = k0 + BK < K;
+      if (has_next) fetch(k0 + BK); /* in flight during the math below */
+
+      const unsigned short* const as = As + buf * kStageA;
+      const unsigned short* const bs = Bs + buf * kStageB;
+#pragma unroll
+      for (int kk = 0; kk < BK; kk += 16) {
+        /* B (k rows, n columns), transposed on load: matrices (k 0-7, n 0-7),
+           (k 8-15, n 0-7), (k 0-7, n 8-15), (k 8-15, n 8-15) -> b of tile
+           2p at steps 0 and 1, then of tile 2p+1. */
+        unsigned bf[kTilesN / 2][4];
+#pragma unroll
+        for (int p = 0; p < kTilesN / 2; ++p) {
+          const int r = kk + (lm & 1) * 8 + lr;
+          const int c = swizzle_chunk<kChunksRowB>(r, (warp_col + p * 16) / 8 + (lm >> 1));
+          ldmatrix_x4_trans(bf[p], smem_addr(bs + r * BN + c * 8));
+        }
+        /* A, one 16-row tile at a time (loading all of them first spilled at
+           the 128-register floor; optimization log entry 5): matrices
+           (rows 0-7, k 0-7), (rows 8-15, k 0-7), (rows 0-7, k 8-15),
+           (rows 8-15, k 8-15) -> a0/a1 of k8 step 0, then of step 1. */
+#pragma unroll
+        for (int i = 0; i < kTilesM; ++i) {
+          unsigned af[4];
+          const int r = warp_row + i * 16 + (lm & 1) * 8 + lr;
+          const int c = swizzle_chunk<kChunksRowA>(r, kk / 8 + (lm >> 1));
+          ldmatrix_x4(af, smem_addr(as + r * BK + c * 8));
+#pragma unroll
+          for (int step = 0; step < 2; ++step) {
+#pragma unroll
+            for (int j = 0; j < kTilesN; ++j) {
+              mma_m16n8k8<T>(acc[i][j], af[step * 2], af[step * 2 + 1],
+                             bf[j / 2][(j % 2) * 2 + step]);
+            }
+          }
+        }
+      }
+
+      if (has_next) stash(buf ^ 1);
+      __syncthreads();
+      buf ^= 1;
+    }
+
+#pragma unroll
+    for (int i = 0; i < kTilesM; ++i) {
+      const int row = block_row + warp_row + i * 16 + lane / 4;
+#pragma unroll
+      for (int j = 0; j < kTilesN; ++j) {
+        const int col = block_col + warp_col + j * 8 + (lane % 4) * 2;
+        store_pair<T, kVec>(C, M, N, row, col, acc[i][j][0], acc[i][j][1]);
+        store_pair<T, kVec>(C, M, N, row + 8, col, acc[i][j][2], acc[i][j][3]);
+      }
+    }
+  }
+}
+
 }  // namespace kernels
 }  // namespace ccml
 

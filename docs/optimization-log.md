@@ -528,7 +528,9 @@ attack long_scoreboard.
 
 ## 5. Matmul: `mma.sync` m16n8k8 + `ldmatrix` on a swizzled layout (`CCML_MATMUL_MMA_SYNC`)
 
-**Status:** hypothesis committed before the code.
+**Status:** implemented and correct (FP16 from sm_75, BF16 from sm_80, SKIP on
+the T4; all 3 Tensor Core configurations). Local sm_89 evidence below, after
+**two corrections during the step**; the official T4 timings are pending.
 
 ### Hypothesis
 
@@ -576,3 +578,107 @@ inner product written in PTX:
 speedup despite conflict-free shared memory, which would mean global-load
 latency with only one prefetch stage is the limit; the remedy would then be a
 deeper pipeline (cp.async multistage on sm_80+, docs/local.md L2).
+
+### Change
+
+- `matmul_mma_sync<T, BM, BN, BK, WM, WN, kVec>` in `src/matmul/matmul_kernels.cuh`:
+  `ldmatrix.x4` / `.x4.trans`, `mma.sync.m16n8k8`, XOR-swizzled unpadded
+  tiles (`swizzle_chunk`), register-prefetch double buffering, epilogue from
+  the documented accumulator layout. Same 3 configurations as WMMA (bench rows
+  `mma_*`); the enum runs **configuration 1 (64x64x32, 4 warps)**, see below.
+- Host: needs sm_75 (FP16) / sm_80 (BF16) in the loaded binary, else
+  NOT_IMPLEMENTED; the compiled-architecture query is cached per kernel.
+- Tests: `matmul_tc` covers it with every WMMA case (the suite iterates over
+  the Tensor Core algos). sm_89: 10/10 pass, FP16 and BF16. sm_75 compile
+  check: FP16 bodies built, BF16 bodies empty.
+
+**Correction 1: the first version was slower than WMMA (0.88-0.92x)**
+(`results/sm_89/mma_sync_spilling_*.csv`,
+`profiles/sm_89/matmul/wmma_vs_mma_sync_spilling_*`). The SASS showed why:
+loading the A fragments of all four 16-row tiles before the MMAs (16
+registers) on top of 64 accumulators and 16 prefetch registers exceeded the
+128-register occupancy floor, so 7 values spilled to local memory inside the
+K loop, and the shared global loader's `unsigned short[8]` zero-fill was
+compiled into 8 byte-permutes (`PRMT`) per 16-byte chunk. Changes: A
+fragments are loaded one 16-row tile at a time; the `mma` asm is no longer
+`volatile` (it only reads and writes registers, so the compiler may schedule
+fragment loads around it); and MMA_SYNC got its own loader (whole `uint4`
+chunks, per-thread source pointers fixed for the K loop). `PRMT` is gone and
+every shared store is `STS.128`.
+
+**Correction 2: the default configuration.** Configuration 0 (128x128, 8
+warps, warp tile 64x32) still spills at the 128-register floor (`STACK:48`).
+Configuration 1 (64x64, 4 warps, warp tile 32x32) uses 114 registers, no
+stack, 16 KB of shared memory (4 resident blocks on sm_89, and on the T4
+where shared memory allows 4 as well), and was fastest in the sm_89 sweep. The
+enum uses it; WMMA keeps configuration 0, as measured in entry 4. The T4 sweep
+re-checks both choices.
+
+### Evidence
+
+**Timings, local sm_89 (indicative), warm L2, median of 200, interleaved per
+shape** (`results/sm_89/mma_sync_*.csv`; `python scripts/summarize_matmul.py
+--prev wmma --new mma_sync --dtype f16 "results/sm_89/mma_sync_gpt2*.csv"`).
+Event timestamps on this laptop are quantized to about 1 us (every median is a
+multiple of 1.024 us), which matters only for the decode rows.
+
+| Shape (FP16) | wmma | **mma_sync** | best ccml row | cuBLAS GemmEx | cuBLASLt top-1 | mma_sync %peak (theory / measured) |
+|---|---|---|---|---|---|---|
+| 2048x4096x1024 | 1,135 us | **1,027 us (1.10x)** | mma_sync | 1,080 us * | **983 us** | 75.2% / 91.8% |
+| 512x3072x768 | 178 us | **158 us (1.13x)** | mma_64x64x32 | 146 us | 145 us | 68.8% / 84.1% |
+| 128x2304x768 | 48.1 us | **37.9 us (1.27x)** | mma_sync | 36.9 us | 36.9 us | 53.7% / 65.6% |
+| 16x2304x768 | 55.3 us | 21.5 us | **mma_16x128x32: 13.3 us** | 16.4 us | 16.4 us | 11.8% / 14.4% |
+
+\* GemmEx's spread is wide in that run (p10 988, p90 1190 us); cuBLASLt's
+heuristic kernel is tight at 983 us, and it is the vendor number to beat: at
+1,027 us MMA_SYNC is **0.96x of it, a loss**. All rows of this table ran at
+2535 MHz.
+
+BF16 (sm_89 only): MMA_SYNC is **as fast as FP16** (1,027 / 158 / 37.9 / 21.5
+us), 1.40-1.62x over WMMA's BF16. The BF16 gap in entry 4 was therefore a
+property of the WMMA path, not of BF16 Tensor Cores.
+
+**Decode shape, 16x2304x768, at identical clocks (2535 MHz):** the 16x128x32
+configuration takes **13.3 us against cuBLAS's 16.4 us (FP16, 1.23x) and 19.5
+us (BF16, 1.46x)**, with p10-p90 ranges that do not overlap. This is the first
+Tensor Core shape-level win, **indicative only**: the T4 run is the official
+test, and it is not claimed until then.
+
+**Nsight Compute, local sm_89, FP16, enum configurations (WMMA 0, MMA_SYNC 1)**
+(`profiles/sm_89/matmul/wmma_vs_mma_sync_*.ncu-rep`, `_metrics.csv`; table by
+`python scripts/ncu_table.py "profiles/sm_89/matmul/wmma_vs_mma_sync_gpt2*_metrics.csv"`):
+
+| Metric (512x3072x768 / 16x2304x768) | wmma | mma_sync |
+|---|---|---|
+| Duration under the profiler | 215 / 56.7 us | **188 / 31.3 us** |
+| Shared-load bank conflicts | 60,744 / 1,190 | **6,608 / 0** |
+| Shared-store bank conflicts | 425,010 / 77,130 | 130,965 / **0** |
+| Registers; block limit (regs, smem) | 128; 2, 2 | 114; **4, 5** |
+| Stall long_scoreboard (per issue) | 6.87 / 6.54 | **2.28** / 10.8 |
+| Stall math_pipe_throttle | 6.68 / 5.62 | 6.90 / 3.49 |
+| Tensor pipe active | 37.0% / 29.0% | **41.4%** / 18.7% |
+| DRAM throughput | 20.1% / 49.4% | 23.0% / **89.6%** |
+
+### Verdict
+
+**Kept**, with configuration 1 as its default; T4 pending.
+
+1. Conflicts near zero: **loads met** (60.7 K -> 6.6 K; 0 at decode size).
+   **Stores: met at decode size (0), not explained on the larger grid (131 K).**
+   The kernel and the store addresses are identical in both profiles, so an
+   address-pattern conflict cannot account for the difference; my working
+   explanation is contention between concurrent shared-memory requests of the
+   4-5 resident blocks, which this counter may include. It is unverified:
+   `scripts/ncu_matmul.ps1` now also collects shared wavefronts per
+   instruction, which settles it in the next profile.
+2. 1.15-1.5x over WMMA and at least 0.9x of cuBLAS on large shapes (sm_89):
+   **met at the low end after the corrections**: 1.10-1.27x, and 0.93-0.97x of
+   the best vendor kernel. Without the corrections it was falsified (0.88x).
+   The gain came from occupancy (4 resident blocks; long_scoreboard -67%) more
+   than from the conflicts.
+3. Decode shapes unchanged: **falsified, favourably.** At M = 16 the enum
+   configuration is 2.6x faster than WMMA, now DRAM-bound (89.6% of DRAM
+   peak), and the 16-row configuration beats cuBLAS on sm_89. Split-K (S2,
+   entry 6) is still worth testing there: at M = 16 the 16x128 grid has 18
+   blocks for 16 SMs on sm_89 and 40 SMs on the T4, so the T4 will be
+   under-filled.
