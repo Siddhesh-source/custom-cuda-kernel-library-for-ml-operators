@@ -121,6 +121,20 @@ def setup(op: str, shape: dict, impls: list[str], mode: str, dtype: str = "f32")
         if "compile" in impls:
             cf = compiled(lambda a, m: torch.softmax(a * 0.125 + m, dim=-1), mode)
             cands.append(bl.Candidate("torch_compile", mode, lambda: cf(x, mask)))
+            if causal:
+                # The strongest compile baseline for a causal mask: generated
+                # in-graph from indices, as ccml does, so Inductor need not
+                # read a materialized [rows, cols] mask (a third row-sized
+                # transfer the materialized-mask candidates pay). Same logits,
+                # so the same reference.
+                def causal_in_graph(a):
+                    qq = torch.arange(a.shape[0], device=a.device) % cols
+                    kk = torch.arange(cols, device=a.device)
+                    return torch.softmax((a * 0.125).masked_fill(kk[None, :] > qq[:, None],
+                                                                 float("-inf")), dim=-1)
+                cg = compiled(causal_in_graph, mode)
+                cands.append(bl.Candidate("torch_compile", f"{mode} in-graph causal",
+                                          lambda: cg(x)))
         nbytes = float(2 * rows * cols + (0 if causal else cols)) * ELEM_BYTES[dtype]
         return ref, tol, 0.0, nbytes, cands
 
