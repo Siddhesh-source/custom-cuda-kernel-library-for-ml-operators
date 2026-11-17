@@ -18,7 +18,11 @@ typedef enum ccml_softmax_algo {
   /* A long row split across blocks (few, long rows: vocabulary softmax); two
      kernels and a small workspace from cudaMallocAsync on `stream`;
      deterministic. Short rows run ONLINE. */
-  CCML_SOFTMAX_SPLIT_ROW      = 4
+  CCML_SOFTMAX_SPLIT_ROW      = 4,
+  /* Block per row with the row in registers, 128-bit when aligned (long rows);
+     cols <= 8192 FP32 / 16384 FP16, BF16 aligned, 2048 unaligned (else
+     UNSUPPORTED_SHAPE). */
+  CCML_SOFTMAX_BLOCK_RESIDENT = 5
 } ccml_softmax_algo;
 
 CCML_API const char* ccml_softmax_algo_name(ccml_softmax_algo algo);

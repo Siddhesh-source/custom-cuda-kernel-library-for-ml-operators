@@ -81,6 +81,59 @@ ccml_status launch_warp_per_row(T* y, const T* x, int rows, int cols, cudaStream
              : launch_wpr_chunks<T, 1>(y, x, rows, cols, stream);
 }
 
+/* Block per row, register resident (entry 17). */
+template <typename T, int kV, int kChunks>
+ccml_status launch_br(T* y, const T* x, int rows, int cols, cudaStream_t stream) {
+  ccml::detail::LaunchConfig config;
+  config.block = dim3(ccml::kernels::kSoftmaxResidentThreads, 1, 1);
+  config.grid = dim3(static_cast<unsigned>(rows), 1, 1);
+  void (*const softmax_block_resident)(T*, const T*, int, int) =
+      &ccml::kernels::softmax_block_resident<T, kV, kChunks>;
+  CCML_LAUNCH(softmax_block_resident, config, stream, y, x, rows, cols);
+  return CCML_SUCCESS;
+}
+
+template <typename T, int kV>
+ccml_status launch_br_chunks(T* y, const T* x, int rows, int cols, cudaStream_t stream) {
+  constexpr int kT = ccml::kernels::kSoftmaxResidentThreads;
+  const int chunks = (cols / kV + kT - 1) / kT;
+  if (chunks <= 1) return launch_br<T, kV, 1>(y, x, rows, cols, stream);
+  if (chunks <= 2) return launch_br<T, kV, 2>(y, x, rows, cols, stream);
+  if (chunks <= 4) return launch_br<T, kV, 4>(y, x, rows, cols, stream);
+  return launch_br<T, kV, ccml::kernels::kSoftmaxResidentMaxChunks>(y, x, rows, cols, stream);
+}
+
+/* The widest row BLOCK_RESIDENT holds: 8192 FP32, 16384 FP16 / BF16 when the
+   row is 128-bit aligned; 2048 otherwise (one element per chunk). */
+template <typename T>
+constexpr int block_resident_max_cols(bool vec) {
+  return ccml::kernels::kSoftmaxResidentThreads * ccml::kernels::kSoftmaxResidentMaxChunks *
+         (vec ? static_cast<int>(16 / sizeof(T)) : 1);
+}
+
+template <typename T>
+bool softmax_vec_ok(const T* y, const T* x, int cols) {
+  constexpr int kV = static_cast<int>(16 / sizeof(T));
+  return cols % kV == 0 && reinterpret_cast<std::uintptr_t>(x) % 16 == 0 &&
+         reinterpret_cast<std::uintptr_t>(y) % 16 == 0;
+}
+
+template <typename T>
+ccml_status launch_block_resident(T* y, const T* x, int rows, int cols, cudaStream_t stream,
+                                  const std::string& fn) {
+  const bool vec = softmax_vec_ok(y, x, cols);
+  if (cols > block_resident_max_cols<T>(vec)) {
+    ccml::detail::set_last_error(
+        (fn + ": BLOCK_RESIDENT holds a row in one block's registers: cols <= " +
+         std::to_string(block_resident_max_cols<T>(vec)) + " for this dtype and alignment")
+            .c_str());
+    return CCML_ERROR_UNSUPPORTED_SHAPE;
+  }
+  constexpr int kV = static_cast<int>(16 / sizeof(T));
+  return vec ? launch_br_chunks<T, kV>(y, x, rows, cols, stream)
+             : launch_br_chunks<T, 1>(y, x, rows, cols, stream);
+}
+
 /* Split row (entry 15): S segments per row so that rows x S >= 2 x SMs, each
    segment at least kMinSegment columns. S = 1 runs ONLINE (no workspace). */
 constexpr int kMinSegment = 2048;
@@ -168,6 +221,9 @@ ccml_status softmax(Public* y_pub, const Public* x_pub, int rows, int cols,
 
     case CCML_SOFTMAX_WARP_PER_ROW:
       return launch_warp_per_row(y, x, rows, cols, stream, fn_name<Public>());
+
+    case CCML_SOFTMAX_BLOCK_RESIDENT:
+      return launch_block_resident(y, x, rows, cols, stream, fn_name<Public>());
 
     case CCML_SOFTMAX_SPLIT_ROW:
       return launch_split_row(y, x, rows, cols, stream);
@@ -264,6 +320,7 @@ const char* ccml_softmax_algo_name(ccml_softmax_algo algo) {
     case CCML_SOFTMAX_WARP_PER_ROW:  return "warp_per_row";
     case CCML_SOFTMAX_ONLINE:        return "online";
     case CCML_SOFTMAX_SPLIT_ROW:     return "split_row";
+    case CCML_SOFTMAX_BLOCK_RESIDENT: return "block_resident";
   }
   return "unknown";
 }

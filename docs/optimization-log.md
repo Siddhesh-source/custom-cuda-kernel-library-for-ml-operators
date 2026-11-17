@@ -1982,7 +1982,9 @@ rows in the CSV).
 
 ## 17. Softmax: register-resident block per row for long rows (`CCML_SOFTMAX_BLOCK_RESIDENT`)
 
-**Status:** hypothesis committed before the code.
+**Status:** implemented and correct (FP32, FP16, BF16; 17/17 softmax tests,
+11/11 suites on sm_89). Kaggle T4 result pending; Nsight Compute not run
+(needs the elevated prompt, as entries 14 and 16).
 
 ### Hypothesis
 
@@ -2020,3 +2022,24 @@ and -inf policy identical to WARP_PER_ROW. New enum value 5; AUTO picks it for
    GPU): no change; SPLIT_ROW stays the choice.
 4. Nsight Compute: dram__throughput near the WARP_PER_ROW figure; L2-to-SM
    traffic per row halved (one read instead of two).
+
+### Change
+
+`softmax_block_resident<T, kV, kChunks>` (src/softmax/softmax_kernels.cuh),
+`launch_block_resident` (src/softmax/softmax.cu): 256 threads, chunk buckets
+1, 2, 4, 8 per thread, 128-bit path when cols % kV == 0 and both pointers are
+16-byte aligned. Two barriers per row (`__syncthreads_or` carries the NaN
+flag with the max). Rows past the limit return UNSUPPORTED_SHAPE. AUTO is
+unchanged until the T4 data picks the buckets. Tests:
+`softmax.block_resident_buckets_and_limits` (bucket edges, scalar and vector
+widths, a misaligned view, both refusals), plus the shared case and policy
+tests and the FP16/BF16 dtype suite.
+
+### Evidence
+
+Local sm_89 (RTX 3050 Laptop, 128 GB/s theoretical; indicative only), warm:
+every long-row variant sits at 80-114 GB/s on the attention s2048 shapes, FP32
+4772 vs ONLINE 4786 us (gpt2s), FP16 1769 vs 2019 us (gpt2s, 1.14x), 3365 vs
+3364 us (gpt2m). This GPU is DRAM-bound for every variant at about 65% of its
+theoretical bandwidth, so it cannot show the T4 gap (ONLINE at 128 GB/s
+against Triton's 230 GB/s on a 227 GB/s-measured T4). The T4 run decides.
