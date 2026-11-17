@@ -26,6 +26,7 @@ namespace ccml_bench {
  *                   (its rows are reported NOT_RUN)
  *   --tile-sweep    matmul: also time every REGISTER_TILED tile configuration
  *                   (reference.md section 5, tile and block size sweep)
+ *   --sweep tc|cc|both  matmul: which tile families --tile-sweep covers
  *   --dtype LIST    matmul: storage types to run, comma-separated, from
  *                   f32, f16, bf16 (default f32). One CSV, dtype column set.
  */
@@ -39,6 +40,9 @@ struct Options {
   std::string  impls;              /* empty = all */
   double       naive_max_gflop = 0.0;  /* 0 = no limit */
   bool         tile_sweep = false;
+  /* With --tile-sweep: "cc" CUDA-core tile configurations, "tc" Tensor Core
+     configurations, "both" (default). */
+  std::string  sweep = "both";
   std::vector<std::string> dtypes = {"f32"};
   TimingConfig timing;
 

@@ -51,6 +51,10 @@ Options parse_options(int argc, char** argv) {
     else if (arg == "--impls") o.impls = value();
     else if (arg == "--naive-max-gflop") o.naive_max_gflop = std::atof(value().c_str());
     else if (arg == "--tile-sweep") o.tile_sweep = true;
+    else if (arg == "--sweep") {
+      o.sweep = value();
+      if (o.sweep != "tc" && o.sweep != "cc" && o.sweep != "both") usage("--sweep tc|cc|both");
+    }
     else if (arg == "--dtype") {
       o.dtypes.clear();
       const std::string v = value();

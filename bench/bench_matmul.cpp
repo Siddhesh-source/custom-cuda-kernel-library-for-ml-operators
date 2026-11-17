@@ -118,6 +118,7 @@ void run_shape(const Options& options, Emitter& emitter, CublasBaseline& cublas,
         {CCML_MATMUL_VECTORIZED, "vec_"},
         {CCML_MATMUL_DOUBLE_BUFFERED, "db_"}};
     for (const auto& [variant, prefix] : family) {
+      if (options.sweep == "tc") break;
       for (int index = 0; index < ccml_matmul_tile_config_count(); ++index) {
         ccml_matmul_tile_config t;
         ccml_matmul_tile_config_get(index, &t);
@@ -132,7 +133,7 @@ void run_shape(const Options& options, Emitter& emitter, CublasBaseline& cublas,
       }
     }
     /* Tensor Core configurations: <prefix><block tile>_w<warp tile>. */
-    if (D::blas != BlasType::F32) {
+    if (D::blas != BlasType::F32 && options.sweep != "cc") {
       for (const auto& [variant, prefix] : kTcFamily) {
         for (int index = 0; index < ccml_matmul_tc_config_count(); ++index) {
           ccml_matmul_tc_config t;
