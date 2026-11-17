@@ -131,6 +131,12 @@ shared-memory loads remove the strided B reads (the conflicts), and a
 register-lighter variant raises occupancy. `AUTO` moves to per-shape dispatch
 once the T4 tile sweep lands.
 
+### Official T4 result (commit 12cb762, docs/results/phase-9-10-matmul-ladder.md)
+
+tiled -> register_tiled, median per class: **5.02x large, 3.28x mid, 0.38x
+decode**; 31.2% of peak on large shapes (prediction: 30-50%). All three
+predictions hold on the target GPU.
+
 ---
 
 ## 2. Matmul: vectorized loads and conflict-free shared memory (`CCML_MATMUL_VECTORIZED`)
@@ -263,6 +269,13 @@ double buffering (entry 3): overlap the next tile's global loads with the
 current tile's math, since `long_scoreboard` (waiting on global memory) is now
 the largest remaining stall (1.50 per issue).
 
+### Official T4 result (commit 12cb762)
+
+register_tiled -> vectorized, median per class: **1.43x large, 1.37x mid, 1.16x
+decode**; 43.6% of peak on large shapes (prediction: 1.2-1.6x, 45-60%). The
+speedup is met; the peak fraction lands just under the band on the T4, where
+the 70 W power cap holds long kernels to ~900 MHz.
+
 ---
 
 ## 3. Matmul: double buffering (`CCML_MATMUL_DOUBLE_BUFFERED`)
@@ -365,3 +378,13 @@ MHz). **This is not a win and is not claimed as one.**
 clock correction. FMA-pipe utilization (63%) and occupancy (33%) are now the
 limits. The remaining reference.md ladder step is Tensor Cores (Phase 11),
 which changes the compute ceiling itself.
+
+### Official T4 result (commit 12cb762)
+
+vectorized -> double_buffered, median per class: **1.05x large, 1.22x mid,
+1.35x decode** (prediction: 1.05-1.20x). On large shapes it reaches **44.6% of
+peak, equal to cuBLAS's median**, and it beats cuBLAS on two target shapes
+with the vendor kernel at a *higher* clock: llama1b attn_out 2048^3 (4,641 vs
+5,345 us, 1.15x) and gpt2s ffn_up 2048x3072x768 (2,639 vs 2,826 us, 1.07x).
+The sm_89 decode win did **not** transfer: on the T4, cuBLAS is 1.14x faster
+at M = 16.
