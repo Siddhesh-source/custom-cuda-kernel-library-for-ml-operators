@@ -53,7 +53,7 @@ def eval_ids(tokenizer, n_tokens: int) -> tuple[torch.Tensor, str]:
     try:
         from datasets import load_dataset
 
-        ds = load_dataset("wikitext", "wikitext-2-raw-v1", split="test")
+        ds = load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1", split="test")
         text = "\n\n".join(ds["text"])
         source = "wikitext-2-raw-v1 test"
     except Exception as e:  # noqa: BLE001
@@ -71,7 +71,7 @@ def perplexity(model, ids: torch.Tensor, window: int = 512) -> float:
         chunk = ids[start:start + window + 1].to("cuda")
         if chunk.numel() < 2:
             break
-        logits = model(chunk[None, :-1]).logits.float()
+        logits = model(chunk[None, :-1], use_cache=False).logits.float()
         loss = torch.nn.functional.cross_entropy(logits[0], chunk[1:], reduction="sum")
         nll += loss.item()
         count += chunk.numel() - 1
@@ -85,12 +85,18 @@ def graph_forward(model, ids: torch.Tensor):
     side.wait_stream(torch.cuda.current_stream())
     with torch.cuda.stream(side), torch.no_grad():
         for _ in range(3):  # warm up allocations outside the capture
-            model(static)
+            model(static, use_cache=False)
     torch.cuda.current_stream().wait_stream(side)
     graph = torch.cuda.CUDAGraph()
     with torch.cuda.graph(graph), torch.no_grad():
-        out = model(static).logits
-    return lambda: (graph.replay(), out)[1]
+        out = model(static, use_cache=False).logits
+
+    def replay():
+        # The graph reads `static`'s memory: the closure must keep it alive
+        # (first T4 run: freed and reused, replays gathered garbage token ids).
+        graph.replay()
+        return out if static is not None else None
+    return replay
 
 
 def main() -> int:
@@ -122,11 +128,11 @@ def main() -> int:
     ids, source = eval_ids(tok, a.eval_tokens)
     with torch.no_grad():
         first = ids[:512].to("cuda")[None]
-        l32 = ref32(first).logits.float()
+        l32 = ref32(first, use_cache=False).logits.float()
         ccml_ext.modules.ATTENTION_CALLS = 0
-        l_ccml = ccml_model(first).logits.float()
+        l_ccml = ccml_model(first, use_cache=False).logits.float()
         attention_calls = ccml_ext.modules.ATTENTION_CALLS
-        l_stock = stock(first).logits.float()
+        l_stock = stock(first, use_cache=False).logits.float()
     parity = {
         "model": a.model,
         "eval_source": source,
@@ -177,8 +183,8 @@ def main() -> int:
                 g = torch.Generator(device="cuda").manual_seed(b * 1000 + s)
                 x = torch.randint(0, tok.vocab_size, (b, s), device="cuda", generator=g)
                 with torch.no_grad():
-                    ref = ref32(x).logits.float()
-                    own_err = (stock(x).logits.float() - ref).abs().max().item()
+                    ref = ref32(x, use_cache=False).logits.float()
+                    own_err = (stock(x, use_cache=False).logits.float() - ref).abs().max().item()
                 bound = max(2.0 * own_err, 1e-2 * ref.abs().max().item())
                 torch._dynamo.reset()
                 cands, notes = [], {}
@@ -189,14 +195,14 @@ def main() -> int:
                             return f()
                     return run
 
-                cands.append(bl.Candidate("pytorch_eager", "eager", nograd(lambda: stock(x).logits)))
+                cands.append(bl.Candidate("pytorch_eager", "eager", nograd(lambda: stock(x, use_cache=False).logits)))
                 cands.append(bl.Candidate("ccml", "eager+ccml",
-                                          nograd(lambda: ccml_model(x).logits)))
+                                          nograd(lambda: ccml_model(x, use_cache=False).logits)))
                 for name, m in (("compile", stock), ("compile+ccml", ccml_model)):
                     try:
                         cm = torch.compile(m)
                         cands.append(bl.Candidate("torch_compile" if m is stock else "ccml", name,
-                                                  nograd(lambda cm=cm: cm(x).logits)))
+                                                  nograd(lambda cm=cm: cm(x, use_cache=False).logits)))
                     except Exception as e:  # noqa: BLE001
                         notes[name] = f"{type(e).__name__}: {e}"
                 for name, m in (("cudagraph", stock), ("cudagraph+ccml", ccml_model)):
