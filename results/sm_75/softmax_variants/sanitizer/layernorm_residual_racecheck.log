@@ -1,0 +1,17 @@
+========= COMPUTE-SANITIZER
+[PASS] layernorm_residual.F32_every_case
+       f32 vectorized: worst normalized error 0.040185
+       f32 welford: worst normalized error 0.040284
+       f32 auto: worst normalized error 0.040185
+[PASS] layernorm_residual.F16_every_case
+       f16 vectorized: worst normalized error 0.492001
+       f16 welford: worst normalized error 0.492001
+       f16 auto: worst normalized error 0.492001
+[PASS] layernorm_residual.BF16_every_case
+       bf16 vectorized: worst normalized error 0.495011
+       bf16 welford: worst normalized error 0.495011
+       bf16 auto: worst normalized error 0.495011
+[PASS] layernorm_residual.rejects_bad_arguments
+
+4 passed, 0 failed, 0 skipped
+========= RACECHECK SUMMARY: 0 hazards displayed (0 errors, 0 warnings)

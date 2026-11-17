@@ -1,0 +1,18 @@
+========= COMPUTE-SANITIZER
+[PASS] softmax_masked.F32_every_config
+       f32 warp_per_row: worst normalized error 0.083500
+       f32 online: worst normalized error 0.078185
+       f32 auto: worst normalized error 0.083500
+[PASS] softmax_masked.F16_every_config
+       f16 warp_per_row: worst normalized error 0.499577
+       f16 online: worst normalized error 0.499577
+       f16 auto: worst normalized error 0.499577
+[PASS] softmax_masked.BF16_every_config
+       bf16 warp_per_row: worst normalized error 0.496292
+       bf16 online: worst normalized error 0.496292
+       bf16 auto: worst normalized error 0.496292
+[PASS] softmax_masked.nan_poisons_even_a_masked_row
+[PASS] softmax_masked.rejects_bad_arguments
+
+5 passed, 0 failed, 0 skipped
+========= RACECHECK SUMMARY: 0 hazards displayed (0 errors, 0 warnings)

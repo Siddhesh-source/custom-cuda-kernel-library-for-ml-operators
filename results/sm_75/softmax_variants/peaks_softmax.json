@@ -1,0 +1,20 @@
+{
+  "gpu": "Tesla T4",
+  "cc": "7.5",
+  "fp32_tflops_theory": 8.1408,
+  "fp32_tflops_measured": 7.5668,
+  "tc_f16_tflops_theory": 65.1264,
+  "tc_f16_tflops_measured": 47.4941,
+  "tc_bf16_tflops_theory": 0.0000,
+  "tc_bf16_tflops_measured": 0.0000,
+  "bandwidth_gbps_theory": 320.06,
+  "bandwidth_gbps_measured": 227.65,
+  "sm_clock_mhz_during_fma": 1500,
+  "sm_clock_mhz_during_tc": 1215,
+  "sm_clock_mhz_during_copy": 1575,
+  "max_sm_clock_mhz": 1590,
+  "clock_reasons_during_fma": "0x4",
+  "clock_reasons_during_tc": "0x4",
+  "copy_bytes": 536870912,
+  "method": "1500 ms GPU-time warmup, then median of event-timed runs; fma: 8 chains x 4096 iters; tensor cores: wmma 16x16x16 fp32-accumulate, 4 chains x 2048 iters per warp; copy: float4 grid-stride, read+write"
+}
