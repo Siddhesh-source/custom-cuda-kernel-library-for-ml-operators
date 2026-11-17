@@ -217,6 +217,9 @@ class Candidate:
     impl: str
     algo: str
     fn: Callable[[], object]
+    # The fp64 reference of the contract this candidate implements, when it
+    # differs from the shape's default one (None: use the default).
+    ref: object = None
 
 
 @dataclass
