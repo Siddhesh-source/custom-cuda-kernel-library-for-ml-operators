@@ -33,7 +33,10 @@ typedef enum ccml_matmul_algo {
      SPLIT_K_ATOMIC accumulates with atomicAdd and is NOT bitwise
      deterministic between runs. */
   CCML_MATMUL_SPLIT_K = 8,
-  CCML_MATMUL_SPLIT_K_ATOMIC = 9
+  CCML_MATMUL_SPLIT_K_ATOMIC = 9,
+  /* MMA_SYNC with group-M threadblock rasterization (groups of 8 block-rows),
+     so CTAs resident together share operand panels in L2. */
+  CCML_MATMUL_MMA_SYNC_SWIZZLED = 10
 } ccml_matmul_algo;
 
 CCML_API const char* ccml_matmul_algo_name(ccml_matmul_algo algo);

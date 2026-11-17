@@ -825,7 +825,8 @@ L2 will not hold it; the cold-cache rows of the T4 run decide.
 
 ## 7. Matmul: threadblock swizzle (enhancement S1; `CCML_MATMUL_MMA_SYNC_SWIZZLED`)
 
-**Status:** hypothesis committed before the code.
+**Status:** implemented and correct (FP16; BF16 on sm_80+). Local sm_89
+evidence below; T4 pending.
 
 ### Hypothesis
 
@@ -858,3 +859,65 @@ far fewer B panels. Everything else is MMA_SYNC (same tile, configuration 1).
 **What would falsify it:** no DRAM reduction on the T4's large shapes, which
 would mean the dispatch order is not raster or the hardware already reorders;
 or a slowdown from the index arithmetic.
+
+### Change
+
+- `swizzled_block<kGroup>` and `matmul_mma_sync_swizzled` in
+  `src/matmul/matmul_kernels.cuh`: 1-D grid, group of 8 block-rows, then
+  `mma_sync_block_tile` (which now takes its block coordinates as arguments;
+  MMA_SYNC and split-K pass `blockIdx`, timing unchanged: 1022 / 154 / 37.9 us
+  against 1027 / 158 / 37.9 before). Enum `CCML_MATMUL_MMA_SYNC_SWIZZLED`,
+  configuration 1 like MMA_SYNC.
+- Tests: it joins every `matmul_tc` case; the NaN-poisoned outputs prove the
+  mapping covers every tile exactly once, including partial last groups
+  (M = 2047 with 16-row tiles). 11/11 pass on sm_89.
+
+### Evidence
+
+**Timings, local sm_89 (indicative), FP16, median of 200, interleaved per
+shape** (`results/sm_89/swizzle_*.csv`):
+
+| Shape | operands | mma_sync warm / cold | **swizzled warm / cold** | cuBLAS warm |
+|---|---|---|---|---|
+| llama1b ffn_up 2048x8192x2048 | 72 MB | 9,825 us (2460 MHz, power cap) / - | **4,393 us (2.24x)** (2535 MHz) / - | 4,158 us |
+| gpt2m ffn_up 2048x4096x1024 | 28 MB | 1,021 / 1,091 | 1,034 (0.99x) / 1,048 (1.04x) | 983 |
+| gpt2s ffn_up 2048x3072x768 | 19 MB | 586 / 623 | 590 (0.99x) / 613 (1.02x) | 565 |
+| gpt2s qkv 128x2304x768 | 4 MB | 37.9 / 61.4 | 37.0 (1.02x) / **70.7 (0.87x)** | 36.9 |
+| gpt2s qkv 16x2304x768 | 3.6 MB | 21.5 / 46.1 | 21.5 (1.00x) / 46.1 (1.00x) | 16.4 |
+
+(cold rows exist only where the working set is at most 4x L2; the llama1b
+shape is warm only.) The llama1b clock difference (2460 vs 2535 MHz) accounts
+for 3%, not 2.24x; the counters below show the cause.
+
+**Nsight Compute, local sm_89** (`profiles/sm_89/matmul/mma_sync_vs_swizzled_*`;
+4 launches profiled because split-K runs plain MMA_SYNC when it picks one
+slice; columns 1-3 are the same kernel and agree to 1%):
+
+| Metric | llama1b 2048x8192x2048: mma_sync | **swizzled** | gpt2m 2048x4096x1024: mma_sync | swizzled |
+|---|---|---|---|---|
+| Duration under the profiler | 9.14 ms | **4.64 ms** | 1.206 ms | 1.172 ms |
+| DRAM bytes read | **1,091 MB** (27x the 40 MB of A and B) | **151 MB** (-86%) | 12.6 MB | 13.7 MB |
+| L2 sector hit rate | 49.3% | **94.4%** | 97.8% | 97.6% |
+| DRAM throughput, % of peak | 96.2% | 30.7% | 15.6% | 17.0% |
+| Stall long_scoreboard (per issue) | 20.3 | **0.30** | 0.86 | 0.35 |
+| Tensor pipe active | 23.8% | **47.0%** | 45.3% | 46.6% |
+
+### Verdict
+
+**Kept** as its own algo (MMA_SYNC's enum is unchanged; which one AUTO picks
+per shape is enhancement S4's measured table).
+
+1. DRAM -20% and time -3-10% on shapes larger than L2: **exceeded, on the one
+   sm_89 shape larger than its L2**: DRAM reads -86% and 2.24x (warm),
+   1.97x under the profiler. Raster order made MMA_SYNC re-read B 27 times
+   over and run at 96% of DRAM peak with the tensor pipe at 24%. The T4's 4 MB
+   L2 is smaller than every M = 2048 target shape, so the T4 run tests the
+   prediction where it was aimed.
+2. Grids of one wave do not change: **met warm** (1.00-1.02x); **one
+   unexplained cold-L2 loss**: gpt2s qkv 128x2304x768 cold, 70.7 vs 61.4 us
+   (0.87x). The grid is 72 CTAs (one wave), so the order should not matter;
+   it is recorded as a loss and re-checked in the T4 cold rows.
+3. No change on sm_89: **met for the shapes that fit its 32 MB L2**
+   (0.99-1.04x, DRAM bytes equal within 9%), **wrong as stated**: I assumed
+   every target shape fits 32 MB, and llama1b's FFN at M = 2048 (72 MB) does
+   not.

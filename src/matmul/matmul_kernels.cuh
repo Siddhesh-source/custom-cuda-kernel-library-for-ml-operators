@@ -996,7 +996,8 @@ __device__ __forceinline__ void store_pair(T* C, int M, int N, int row, int col,
    the block must call this (it contains barriers). */
 template <typename T, int BM, int BN, int BK, int WM, int WN, bool kVec, typename Epilogue>
 __device__ __forceinline__ void mma_sync_block_tile(const T* A, const T* B, int M, int N, int K,
-                                                    int k_begin, int k_end, Epilogue epi) {
+                                                    int block_row, int block_col, int k_begin,
+                                                    int k_end, Epilogue epi) {
   {
     constexpr int kWarpsN = BN / WN;
     constexpr int kThreads = (BM / WM) * kWarpsN * 32;
@@ -1025,8 +1026,6 @@ __device__ __forceinline__ void mma_sync_block_tile(const T* A, const T* B, int 
     const int lane = tid % 32;
     const int warp_row = (warp / kWarpsN) * WM;
     const int warp_col = (warp % kWarpsN) * WN;
-    const int block_row = static_cast<int>(blockIdx.y) * BM;
-    const int block_col = static_cast<int>(blockIdx.x) * BN;
 
     /* The chunks this thread moves, fixed for the whole K loop: its rows of A
        (and whether they exist) and its columns of B (and whether they exist).
@@ -1194,7 +1193,38 @@ __global__ void __launch_bounds__((BM / WM) * (BN / WN) * 32, 2)
 matmul_mma_sync(T* C, const T* A, const T* B, int M, int N, int K) {
   if constexpr (MmaSyncAvailable<T>::value) {
     mma_sync_block_tile<T, BM, BN, BK, WM, WN, kVec>(
-        A, B, M, N, K, 0, K, [&](int row, int col, float v0, float v1) {
+        A, B, M, N, K, static_cast<int>(blockIdx.y) * BM, static_cast<int>(blockIdx.x) * BN, 0, K,
+        [&](int row, int col, float v0, float v1) {
+          store_pair<T, kVec>(C, M, N, row, col, v0, v1);
+        });
+  }
+}
+
+/* Group-M rasterization (docs/optimization-log.md, entry 7; enhancement S1).
+   Maps a 1-D CTA index to a (block-row, block-column) so that consecutive
+   CTAs walk down a group of kGroup block-rows before moving one column right:
+   the CTAs resident together then share A row panels AND B column panels. */
+template <int kGroup>
+__device__ __forceinline__ void swizzled_block(int pid, int grid_m, int grid_n, int* bm,
+                                               int* bn) {
+  const int per_group = kGroup * grid_n;
+  const int first_m = (pid / per_group) * kGroup;
+  const int rows = grid_m - first_m < kGroup ? grid_m - first_m : kGroup;
+  const int in_group = pid % per_group;
+  *bm = first_m + in_group % rows;
+  *bn = in_group / rows;
+}
+
+/* MMA_SYNC with group-M rasterization. grid = (grid_m * grid_n, 1, 1). */
+template <typename T, int BM, int BN, int BK, int WM, int WN, bool kVec, int kGroup>
+__global__ void __launch_bounds__((BM / WM) * (BN / WN) * 32, 2)
+matmul_mma_sync_swizzled(T* C, const T* A, const T* B, int M, int N, int K) {
+  if constexpr (MmaSyncAvailable<T>::value) {
+    int bm = 0, bn = 0;
+    swizzled_block<kGroup>(static_cast<int>(blockIdx.x), (M + BM - 1) / BM, (N + BN - 1) / BN,
+                           &bm, &bn);
+    mma_sync_block_tile<T, BM, BN, BK, WM, WN, kVec>(
+        A, B, M, N, K, bm * BM, bn * BN, 0, K, [&](int row, int col, float v0, float v1) {
           store_pair<T, kVec>(C, M, N, row, col, v0, v1);
         });
   }
@@ -1220,7 +1250,8 @@ matmul_mma_sync_splitk(float* W, const T* A, const T* B, int M, int N, int K, in
     const int k_end = min(K, k_begin + slice);
     float* const w = kAtomic ? W : W + static_cast<long long>(s) * M * N;
     mma_sync_block_tile<T, BM, BN, BK, WM, WN, kVec>(
-        A, B, M, N, K, k_begin, k_end, [&](int row, int col, float v0, float v1) {
+        A, B, M, N, K, static_cast<int>(blockIdx.y) * BM, static_cast<int>(blockIdx.x) * BN,
+        k_begin, k_end, [&](int row, int col, float v0, float v1) {
           if (row >= M) return;
           float* dst = w + static_cast<long long>(row) * N + col;
           if (kAtomic) {

@@ -146,7 +146,7 @@ const ccml_matmul_algo kAlgos[] = {CCML_MATMUL_NAIVE,          CCML_MATMUL_TILED
                                    CCML_MATMUL_REGISTER_TILED, CCML_MATMUL_VECTORIZED,
                                    CCML_MATMUL_DOUBLE_BUFFERED, CCML_MATMUL_WMMA,
                                    CCML_MATMUL_MMA_SYNC,        CCML_MATMUL_SPLIT_K,
-                                   CCML_MATMUL_SPLIT_K_ATOMIC};
+                                   CCML_MATMUL_SPLIT_K_ATOMIC, CCML_MATMUL_MMA_SYNC_SWIZZLED};
 
 /* The Tensor Core family and its sweep-row prefix. f32 rows report NOT_RUN
    (no FP32 Tensor Core path on sm_75). */

@@ -52,7 +52,7 @@ CCML_API ccml_status ccml_matmul_tc_config_get(int index, ccml_matmul_tc_config*
    CCML_MATMUL_DOUBLE_BUFFERED (configurations whose TM, TN and BK are
    multiples of 4; others return CCML_ERROR_INVALID_ARGUMENT). For the Tensor
    Core family (CCML_MATMUL_WMMA, CCML_MATMUL_MMA_SYNC, CCML_MATMUL_SPLIT_K,
-   CCML_MATMUL_SPLIT_K_ATOMIC) it is into the Tensor Core configurations.
+   CCML_MATMUL_SPLIT_K_ATOMIC, CCML_MATMUL_MMA_SYNC_SWIZZLED) it is into the Tensor Core configurations.
    Same contract as ccml_matmul_<dtype>. */
 CCML_API ccml_status ccml_matmul_tuned_f32(float* C, const float* A, const float* B, int M,
                                            int N, int K, ccml_matmul_algo algo, int index,

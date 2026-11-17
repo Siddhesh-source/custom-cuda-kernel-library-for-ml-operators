@@ -276,6 +276,43 @@ ccml_status launch_mma_sync(T* C, const T* A, const T* B, int M, int N, int K,
   }
 }
 
+/* Swizzled MMA_SYNC (entry 7, S1): group of 8 block-rows, 1-D grid. */
+constexpr int kSwizzleGroup = 8;
+
+template <typename T, int I>
+ccml_status launch_mma_sync_swizzled(T* C, const T* A, const T* B, int M, int N, int K,
+                                     cudaStream_t stream) {
+  if constexpr (std::is_same<T, float>::value) {
+    ccml::detail::set_last_error(
+        "ccml_matmul: Tensor Core variants take 16-bit input (f16, or bf16 on sm_80+); "
+        "sm_75 has no FP32 Tensor Core path");
+    return CCML_ERROR_NOT_IMPLEMENTED;
+  } else {
+    constexpr MatmulTcConfig cfg = kMatmulTcConfigs[I];
+    const bool vec = K % 8 == 0 && N % 8 == 0 && aligned(A, 16) && aligned(B, 16) &&
+                     aligned(C, 16);
+    const dim3 tiles = ccml::detail::grid_for_2d(N, M, cfg.bn, cfg.bm);
+    ccml::detail::LaunchConfig config;
+    config.block = dim3((cfg.bm / cfg.wm) * (cfg.bn / cfg.wn) * 32, 1, 1);
+    config.grid = dim3(tiles.x * tiles.y, 1, 1);
+    void (*const swizzled)(T*, const T*, const T*, int, int, int) =
+        &ccml::kernels::matmul_mma_sync_swizzled<T, cfg.bm, cfg.bn, cfg.bk, cfg.wm, cfg.wn,
+                                                 true, kSwizzleGroup>;
+    void (*const swizzled_scalar_global)(T*, const T*, const T*, int, int, int) =
+        &ccml::kernels::matmul_mma_sync_swizzled<T, cfg.bm, cfg.bn, cfg.bk, cfg.wm, cfg.wn,
+                                                 false, kSwizzleGroup>;
+    static const int arch = compiled_arch(swizzled);
+    const ccml_status ok = require_tc<T>(arch, CCML_MATMUL_MMA_SYNC_SWIZZLED);
+    if (ok != CCML_SUCCESS) return ok;
+    if (vec) {
+      CCML_LAUNCH(swizzled, config, stream, C, A, B, M, N, K);
+    } else {
+      CCML_LAUNCH(swizzled_scalar_global, config, stream, C, A, B, M, N, K);
+    }
+    return CCML_SUCCESS;
+  }
+}
+
 /* ------------------------------------------------------------ split-K --
  *
  * Optimization log entry 6 (S2). Number of K slices: enough CTAs for two per
@@ -369,7 +406,9 @@ ccml_status launch_split_k(T* C, const T* A, const T* B, int M, int N, int K,
    (64x64x32, 4 warps): configuration 0 spills at its 128-register occupancy
    floor, and 1 was fastest in the sm_89 sweep (optimization log entry 5); the
    T4 sweep re-checks the choice. */
-int tc_default_config(ccml_matmul_algo algo) { return algo == CCML_MATMUL_MMA_SYNC ? 1 : 0; }
+int tc_default_config(ccml_matmul_algo algo) {
+  return (algo == CCML_MATMUL_MMA_SYNC || algo == CCML_MATMUL_MMA_SYNC_SWIZZLED) ? 1 : 0;
+}
 
 /* Split-K's configuration for the enum: the 16-row tile for decode sizes
    (M <= 16), MMA_SYNC's default otherwise. */
@@ -377,7 +416,8 @@ int splitk_default_config(int M) { return M <= 16 ? 2 : 1; }
 
 bool is_tc_family(ccml_matmul_algo algo) {
   return algo == CCML_MATMUL_WMMA || algo == CCML_MATMUL_MMA_SYNC ||
-         algo == CCML_MATMUL_SPLIT_K || algo == CCML_MATMUL_SPLIT_K_ATOMIC;
+         algo == CCML_MATMUL_SPLIT_K || algo == CCML_MATMUL_SPLIT_K_ATOMIC ||
+         algo == CCML_MATMUL_MMA_SYNC_SWIZZLED;
 }
 
 template <typename T, int I>
@@ -392,6 +432,8 @@ ccml_status launch_tc_family(ccml_matmul_algo algo, T* C, const T* A, const T* B
       return launch_split_k<T, I, false>(C, A, B, M, N, K, stream);
     case CCML_MATMUL_SPLIT_K_ATOMIC:
       return launch_split_k<T, I, true>(C, A, B, M, N, K, stream);
+    case CCML_MATMUL_MMA_SYNC_SWIZZLED:
+      return launch_mma_sync_swizzled<T, I>(C, A, B, M, N, K, stream);
     default:
       ccml::detail::set_last_error("ccml_matmul: not a Tensor Core algorithm");
       return CCML_ERROR_INVALID_ARGUMENT;
@@ -448,6 +490,7 @@ ccml_status matmul(Public* C_pub, const Public* A_pub, const Public* B_pub, int 
 
     case CCML_MATMUL_WMMA:
     case CCML_MATMUL_MMA_SYNC:
+    case CCML_MATMUL_MMA_SYNC_SWIZZLED:
       return tc_family(algo, C, A, B, M, N, K, tc_default_config(algo), stream);
 
     case CCML_MATMUL_SPLIT_K:
@@ -493,6 +536,7 @@ const char* ccml_matmul_algo_name(ccml_matmul_algo algo) {
     case CCML_MATMUL_MMA_SYNC:       return "mma_sync";
     case CCML_MATMUL_SPLIT_K:        return "split_k";
     case CCML_MATMUL_SPLIT_K_ATOMIC: return "split_k_atomic";
+    case CCML_MATMUL_MMA_SYNC_SWIZZLED: return "mma_sync_swizzled";
   }
   return "unknown";
 }
