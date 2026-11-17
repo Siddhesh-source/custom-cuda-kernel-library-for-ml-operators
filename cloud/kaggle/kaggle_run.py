@@ -56,8 +56,11 @@ OUTPUT_ROOT = HERE / "_output"
 
 DEFAULT_JOBS = ["sanitize", "matmul", "layernorm", "softmax"]
 KNOWN_JOBS = set(DEFAULT_JOBS) | {"all", "build"}
+# Excluded from the payload. profiles/ (Nsight reports, MBs) and results/ (CSVs)
+# are outputs, not inputs: a session never reads them, and packing them would
+# grow the payload past Kaggle's script limit.
 EXCLUDE_DIRS = {".git", "build", "out", "__pycache__", ".pytest_cache", ".vs",
-                ".venv", "_build", "_output"}
+                ".venv", "_build", "_output", "profiles", "results"}
 # Kaggle rejects a very large script; fail loudly rather than mysteriously.
 MAX_PAYLOAD_BYTES = 800_000
 
@@ -213,8 +216,14 @@ def status_of(kernel_id: str) -> str:
 
 
 def is_finished(text: str) -> bool:
-    lowered = text.lower()
-    return any(word in lowered for word in ("complete", "error", "cancel"))
+    """True only for a real terminal status (KernelWorkerStatus.COMPLETE /
+    ERROR / CANCEL...). A failed status *request* -- e.g. ConnectionResetError
+    from a network hiccup -- also contains the word "error"; matching on bare
+    words once ended a wait 30 minutes early while the job was still running."""
+    if "KernelWorkerStatus." not in text:
+        return False
+    status = text.split("KernelWorkerStatus.", 1)[1].upper()
+    return status.startswith(("COMPLETE", "ERROR", "CANCEL"))
 
 
 def collect_results(output_dir: pathlib.Path) -> None:

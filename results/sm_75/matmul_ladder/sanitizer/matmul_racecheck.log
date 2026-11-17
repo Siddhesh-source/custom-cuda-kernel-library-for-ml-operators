@@ -1,0 +1,152 @@
+========= COMPUTE-SANITIZER
+[PASS] matmul.square_tiled
+       tiled M=128 N=128 K=128
+       rms(reference)=11.072625  abs_tol=1.195e-04 rel_tol=1.079e-05
+       n=16384 max_abs=1.804e-05 max_rel=3.352e-03 normalized=0.070 worst_index=2159 nonfinite=0
+[PASS] matmul.square_naive
+       naive M=128 N=128 K=128
+       rms(reference)=11.072625  abs_tol=1.195e-04 rel_tol=1.079e-05
+       n=16384 max_abs=1.804e-05 max_rel=3.352e-03 normalized=0.070 worst_index=2159 nonfinite=0
+[PASS] matmul.ragged_dimensions
+       tiled M=67 N=53 K=41
+       rms(reference)=6.712013  abs_tol=4.099e-05 rel_tol=6.106e-06
+       n=3551 max_abs=5.760e-06 max_rel=2.592e-04 normalized=0.092 worst_index=3146 nonfinite=0
+[PASS] matmul.single_element
+       tiled M=1 N=1 K=1
+       rms(reference)=0.186371  abs_tol=1.777e-07 rel_tol=9.537e-07
+       n=1 max_abs=6.163e-09 max_rel=3.307e-08 normalized=0.017 worst_index=0 nonfinite=0
+[PASS] matmul.tall_skinny
+       tiled M=512 N=1 K=64
+       rms(reference)=8.117055  abs_tol=6.193e-05 rel_tol=7.629e-06
+       n=512 max_abs=6.147e-06 max_rel=1.898e-05 normalized=0.042 worst_index=342 nonfinite=0
+[PASS] matmul.long_k
+       tiled M=32 N=32 K=2048
+       rms(reference)=45.377562  abs_tol=1.958e-03 rel_tol=4.316e-05
+       n=1024 max_abs=1.836e-04 max_rel=3.103e-04 normalized=0.038 worst_index=166 nonfinite=0
+[PASS] matmul.rejects_null_output
+[PASS] matmul.rejects_nonpositive_dimensions
+[PASS] matmul.tiled_agrees_with_naive
+       max |naive - tiled| = 0.000000
+[PASS] matmul.transformer_shapes
+       tiled M=128 N=768 K=768
+       rms(reference)=27.638424  abs_tol=7.305e-04 rel_tol=2.643e-05
+       n=98304 max_abs=1.443e-04 max_rel=2.317e-01 normalized=0.089 worst_index=54848 nonfinite=0
+       tiled M=512 N=768 K=768
+       rms(reference)=27.760843  abs_tol=7.337e-04 rel_tol=2.643e-05
+       n=393216 max_abs=1.615e-04 max_rel=1.021e-01 normalized=0.087 worst_index=270867 nonfinite=0
+       tiled M=128 N=128 K=768
+       rms(reference)=27.848963  abs_tol=7.360e-04 rel_tol=2.643e-05
+       n=16384 max_abs=9.955e-05 max_rel=9.111e-04 normalized=0.071 worst_index=14741 nonfinite=0
+       tiled M=128 N=768 K=128
+       rms(reference)=11.180990  abs_tol=1.206e-04 rel_tol=1.079e-05
+       n=98304 max_abs=2.611e-05 max_rel=2.034e-03 normalized=0.067 worst_index=96672 nonfinite=0
+[PASS] matmul.wide_and_thin
+       tiled M=1 N=512 K=512
+       rms(reference)=21.574247  abs_tol=4.656e-04 rel_tol=2.158e-05
+       n=512 max_abs=3.740e-05 max_rel=1.697e-04 normalized=0.030 worst_index=388 nonfinite=0
+       tiled M=512 N=1 K=512
+       rms(reference)=22.685467  abs_tol=4.895e-04 rel_tol=2.158e-05
+       n=512 max_abs=4.858e-05 max_rel=9.117e-05 normalized=0.047 worst_index=13 nonfinite=0
+       tiled M=512 N=512 K=1
+       rms(reference)=0.994477  abs_tol=9.484e-07 rel_tol=9.537e-07
+       n=262144 max_abs=4.205e-07 max_rel=5.951e-08 normalized=0.049 worst_index=215841 nonfinite=0
+[PASS] matmul.tiled_family_every_config_on_awkward_shapes
+       register_tiled config 0 128x128x8 thread 8x8 (256 threads): worst normalized error 0.087074
+       register_tiled config 1 128x64x8 thread 8x4 (256 threads): worst normalized error 0.103690
+       register_tiled config 2 64x64x8 thread 4x4 (256 threads): worst normalized error 0.088200
+       register_tiled config 3 64x128x8 thread 4x8 (256 threads): worst normalized error 0.104572
+       register_tiled config 4 32x64x16 thread 4x4 (128 threads): worst normalized error 0.090979
+       register_tiled config 5 16x128x16 thread 2x8 (128 threads): worst normalized error 0.105914
+       vectorized config 0 128x128x8 thread 8x8 (256 threads): worst normalized error 0.085958
+       vectorized config 1 128x64x8 thread 8x4 (256 threads): worst normalized error 0.090150
+       vectorized config 2 64x64x8 thread 4x4 (256 threads): worst normalized error 0.132830
+       vectorized config 3 64x128x8 thread 4x8 (256 threads): worst normalized error 0.098161
+       vectorized config 4 32x64x16 thread 4x4 (128 threads): worst normalized error 0.085943
+       double_buffered config 0 128x128x8 thread 8x8 (256 threads): worst normalized error 0.106473
+       double_buffered config 1 128x64x8 thread 8x4 (256 threads): worst normalized error 0.107547
+       double_buffered config 2 64x64x8 thread 4x4 (256 threads): worst normalized error 0.096418
+       double_buffered config 3 64x128x8 thread 4x8 (256 threads): worst normalized error 0.103040
+       double_buffered config 4 32x64x16 thread 4x4 (128 threads): worst normalized error 0.106946
+[PASS] matmul.register_tiled_through_the_algo_enum
+       register_tiled M=128 N=768 K=768
+       rms(reference)=27.581786  abs_tol=7.290e-04 rel_tol=2.643e-05
+       n=98304 max_abs=1.473e-04 max_rel=7.032e-02 normalized=0.091 worst_index=25303 nonfinite=0
+       register_tiled M=131 N=67 K=97
+       rms(reference)=10.046610  abs_tol=9.436e-05 rel_tol=9.393e-06
+       n=8777 max_abs=1.460e-05 max_rel=9.323e-04 normalized=0.052 worst_index=5395 nonfinite=0
+       register_tiled M=1 N=2304 K=768
+       rms(reference)=26.679596  abs_tol=7.051e-04 rel_tol=2.643e-05
+       n=2304 max_abs=7.571e-05 max_rel=2.288e-04 normalized=0.047 worst_index=1736 nonfinite=0
+       register_tiled M=256 N=96 K=2048
+       rms(reference)=44.869942  abs_tol=1.937e-03 rel_tol=4.316e-05
+       n=24576 max_abs=2.932e-04 max_rel=4.516e-03 normalized=0.072 worst_index=17800 nonfinite=0
+[PASS] matmul.tile_config_api_rejects_bad_input
+[PASS] matmul.vectorized_handles_misaligned_pointers
+       n=8192 max_abs=1.172e-05 max_rel=5.078e-04 normalized=0.059 worst_index=3789 nonfinite=0
+       n=8192 max_abs=1.172e-05 max_rel=5.078e-04 normalized=0.059 worst_index=3789 nonfinite=0
+[PASS] matmul.double_buffered_every_k_step_count
+       double_buffered M=67 N=132 K=1
+       rms(reference)=1.060257  abs_tol=1.011e-06 rel_tol=9.537e-07
+       n=8844 max_abs=3.885e-07 max_rel=5.948e-08 normalized=0.045 worst_index=6023 nonfinite=0
+       double_buffered M=67 N=132 K=3
+       rms(reference)=1.786130  abs_tol=2.950e-06 rel_tol=1.652e-06
+       n=8844 max_abs=6.167e-07 max_rel=5.409e-05 normalized=0.051 worst_index=498 nonfinite=0
+       double_buffered M=67 N=132 K=8
+       rms(reference)=2.882191  abs_tol=7.774e-06 rel_tol=2.697e-06
+       n=8844 max_abs=1.298e-06 max_rel=8.596e-05 normalized=0.067 worst_index=5157 nonfinite=0
+       double_buffered M=67 N=132 K=9
+       rms(reference)=3.053256  abs_tol=8.735e-06 rel_tol=2.861e-06
+       n=8844 max_abs=1.556e-06 max_rel=8.467e-04 normalized=0.076 worst_index=1929 nonfinite=0
+       double_buffered M=67 N=132 K=16
+       rms(reference)=4.451930  abs_tol=1.698e-05 rel_tol=3.815e-06
+       n=8844 max_abs=2.455e-06 max_rel=7.823e-04 normalized=0.059 worst_index=7687 nonfinite=0
+       double_buffered M=67 N=132 K=17
+       rms(reference)=3.974282  abs_tol=1.563e-05 rel_tol=3.932e-06
+       n=8844 max_abs=2.020e-06 max_rel=7.754e-04 normalized=0.068 worst_index=8075 nonfinite=0
+       double_buffered M=67 N=132 K=24
+       rms(reference)=4.854104  abs_tol=2.268e-05 rel_tol=4.672e-06
+       n=8844 max_abs=3.419e-06 max_rel=1.895e-04 normalized=0.066 worst_index=1243 nonfinite=0
+       double_buffered M=67 N=132 K=40
+       rms(reference)=6.228825  abs_tol=3.757e-05 rel_tol=6.032e-06
+       n=8844 max_abs=7.302e-06 max_rel=1.815e-04 normalized=0.054 worst_index=448 nonfinite=0
+       double_buffered M=67 N=132 K=63
+       rms(reference)=7.855598  abs_tol=5.946e-05 rel_tol=7.570e-06
+       n=8844 max_abs=1.329e-05 max_rel=2.858e-04 normalized=0.068 worst_index=4884 nonfinite=0
+       double_buffered M=67 N=132 K=64
+       rms(reference)=7.966397  abs_tol=6.078e-05 rel_tol=7.629e-06
+       n=8844 max_abs=1.070e-05 max_rel=3.420e-04 normalized=0.067 worst_index=4388 nonfinite=0
+       double_buffered M=67 N=132 K=65
+       rms(reference)=7.905462  abs_tol=6.078e-05 rel_tol=7.689e-06
+       n=8844 max_abs=8.482e-06 max_rel=7.987e-04 normalized=0.066 worst_index=6957 nonfinite=0
+       double_buffered M=67 N=132 K=1000
+       rms(reference)=31.633232  abs_tol=9.540e-04 rel_tol=3.016e-05
+       n=8844 max_abs=1.276e-04 max_rel=1.046e-02 normalized=0.060 worst_index=1399 nonfinite=0
+[PASS] matmul.double_buffered_through_the_algo_enum
+       double_buffered M=128 N=768 K=768
+       rms(reference)=27.796123  abs_tol=7.346e-04 rel_tol=2.643e-05
+       n=98304 max_abs=1.488e-04 max_rel=1.400e-02 normalized=0.076 worst_index=20752 nonfinite=0
+       double_buffered M=131 N=67 K=97
+       rms(reference)=9.729641  abs_tol=9.139e-05 rel_tol=9.393e-06
+       n=8777 max_abs=1.344e-05 max_rel=1.576e-04 normalized=0.071 worst_index=7699 nonfinite=0
+       double_buffered M=1 N=2304 K=768
+       rms(reference)=27.835128  abs_tol=7.357e-04 rel_tol=2.643e-05
+       n=2304 max_abs=8.103e-05 max_rel=6.995e-03 normalized=0.045 worst_index=2 nonfinite=0
+       double_buffered M=256 N=96 K=2048
+       rms(reference)=45.211500  abs_tol=1.951e-03 rel_tol=4.316e-05
+       n=24576 max_abs=3.723e-04 max_rel=2.886e-03 normalized=0.059 worst_index=7615 nonfinite=0
+[PASS] matmul.vectorized_through_the_algo_enum
+       vectorized M=128 N=768 K=768
+       rms(reference)=27.726535  abs_tol=7.328e-04 rel_tol=2.643e-05
+       n=98304 max_abs=1.589e-04 max_rel=6.514e-02 normalized=0.073 worst_index=72547 nonfinite=0
+       vectorized M=131 N=67 K=97
+       rms(reference)=9.921359  abs_tol=9.319e-05 rel_tol=9.393e-06
+       n=8777 max_abs=1.175e-05 max_rel=1.091e-04 normalized=0.064 worst_index=5556 nonfinite=0
+       vectorized M=1 N=2304 K=768
+       rms(reference)=27.297437  abs_tol=7.214e-04 rel_tol=2.643e-05
+       n=2304 max_abs=1.165e-04 max_rel=1.234e-04 normalized=0.057 worst_index=84 nonfinite=0
+       vectorized M=256 N=96 K=2048
+       rms(reference)=45.130349  abs_tol=1.948e-03 rel_tol=4.316e-05
+       n=24576 max_abs=2.700e-04 max_rel=3.077e-02 normalized=0.072 worst_index=958 nonfinite=0
+
+18 passed, 0 failed, 0 skipped
+========= RACECHECK SUMMARY: 0 hazards displayed (0 errors, 0 warnings)

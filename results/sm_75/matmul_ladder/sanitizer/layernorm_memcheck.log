@@ -1,0 +1,31 @@
+========= COMPUTE-SANITIZER
+[PASS] layernorm.small_dimensions
+       8 shapes; worst max_abs=5.799e-08 max_rel=5.357e-08 normalized=0.021
+       worst at: rows=8 cols=2 gamma=y beta=y
+[PASS] layernorm.single_column_is_finite
+       n=128 max_abs=0.000e+00 max_rel=0.000e+00 normalized=0.000 worst_index=0 nonfinite=0
+[PASS] layernorm.large_dimensions
+       5 shapes; worst max_abs=2.325e-07 max_rel=5.927e-08 normalized=0.002
+       worst at: rows=64 cols=1024 gamma=y beta=y
+[PASS] layernorm.awkward_dimensions
+       6 shapes; worst max_abs=2.322e-07 max_rel=5.930e-08 normalized=0.002
+       worst at: rows=33 cols=517 gamma=y beta=y
+[PASS] layernorm.row_counts
+       6 shapes; worst max_abs=2.384e-07 max_rel=5.957e-08 normalized=0.002
+       worst at: rows=4099 cols=768 gamma=y beta=y
+[PASS] layernorm.many_rows
+       n=5120000 max_abs=2.384e-07 max_rel=5.958e-08 normalized=0.003 worst_index=946076 nonfinite=0
+[PASS] layernorm.affine_variants
+[PASS] layernorm.large_offset_small_variance
+       mean=10000 stddev=0.01: n=16384 max_abs=2.329e-07 max_rel=5.909e-08 normalized=0.002 worst_index=5591 nonfinite=0
+[PASS] layernorm.moderate_offset
+       mean=1000 stddev=1: n=65536 max_abs=2.378e-07 max_rel=5.934e-08 normalized=0.001 worst_index=9289 nonfinite=0
+[PASS] layernorm.constant_row_is_finite
+[PASS] layernorm.epsilon_is_configurable
+       4096 of 4096 magnitudes shrank when eps went from 1e-5 to 10
+[PASS] layernorm.rejects_nonpositive_eps
+[PASS] layernorm.rejects_null_and_nonpositive_dimensions
+[PASS] layernorm.welford_is_reserved_not_silently_substituted
+
+14 passed, 0 failed, 0 skipped
+========= ERROR SUMMARY: 0 errors
