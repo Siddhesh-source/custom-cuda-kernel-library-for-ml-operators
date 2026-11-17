@@ -28,16 +28,16 @@ Status key: ✅ compliant · 🟡 partial · ❌ missing · ⚠️ contradicts s
 | 9 | Percent of hardware peak (TFLOPS, GB/s) | Method, R§6 | ✅ | TFLOPS / GB/s and % of theoretical and measured peak in every row |
 | 10 | Nsight Systems timelines, Nsight Compute metrics per major optimization | Method, R§9 | ❌ | Never run |
 | 11 | `CUDA_CHECK` on every call, `cudaGetLastError` on every launch | Method | ✅ | `src/common/check.h` — re-verify for each new kernel |
-| 12 | Matmul ladder: naive → smem tiling → register blocking → float4 → double buffering → Tensor Cores (WMMA or mma.sync); speedup recorded per step | R§3 | 🟡 | 2 of 6 rungs on `dev`; register blocking and float4 done on `matmul-ladder` (T4 numbers pending) |
+| 12 | Matmul ladder: naive → smem tiling → register blocking → float4 → double buffering → Tensor Cores (WMMA or mma.sync); speedup recorded per step | R§3 | 🟡 | 5 of 6 rungs: naive, smem tiled, register blocking, float4/vectorized, double buffering, each with its speedup and NCU evidence ([phases 9-10](results/phase-9-10-matmul-ladder.md)). Tensor Cores: Phase 11 |
 | 13 | Layernorm: block- or warp-per-row, Welford or two-pass, warp shuffle, vectorized, optional residual/bias fusion | R§3 | 🟡 | Two-pass block-per-row only |
 | 14 | Softmax: stable, online, warp-per-row short / block-per-row long, optional fused scale/mask | R§3 | 🟡 | Block-per-row three-pass only |
 | 15 | Correctness vs PyTorch **float64** with explicit tolerances for **FP32, FP16, BF16** | R§3, R§9 | ✅ | All operators, all three dtypes, two fp64 references, per-dtype tolerance table; T4 verified ([phase 8](results/phase-8-multi-dtype.md)). BF16 Tensor Core kernels follow in Phase 11 |
 | 16 | Benchmark harness: CSV, TFLOPS, GB/s | R§3 | ✅ | `bench/`, `scripts/bench_torch.py`; one CSV schema (docs/benchmarking.md) |
 | 17 | PyTorch extension via **`torch.utils.cpp_extension`**, droppable into a model | R§3, R§9 | ❌ | ctypes binding only (conflicting docs removed) |
-| 18 | Experiments: tile sweep, shape sweep (+odd shapes), dtype comparison, occupancy vs registers, vectorized vs scalar, fusion vs separate, end-to-end model latency | R§5 | ❌ | None run as sweeps |
+| 18 | Experiments: tile sweep, shape sweep (+odd shapes), dtype comparison, occupancy vs registers, vectorized vs scalar, fusion vs separate, end-to-end model latency | R§5 | 🟡 | Done for matmul: tile sweep (16 configs x 76 shapes), shape sweep incl. odd, occupancy vs registers (NCU, entry 2), vectorized vs scalar (entry 2). Remaining: dtype comparison, fusion vs separate, end-to-end latency |
 | 19 | Roofline plots | R§10 | ❌ | — |
 | 20 | Technical report + demo notebook | R§10 | ❌ | — |
-| 21 | ≥1 operator beats vendor on a target shape, or documented why not | R§9 | ❌ | Phase 7 baseline: ours vs best baseline median 0.17x (matmul), 0.31x (layernorm), 0.23x (softmax); only 2 tiny odd matmul shapes faster |
+| 21 | ≥1 operator beats vendor on a target shape, or documented why not | R§9 | ✅ | matmul beats cuBLAS on 2 target shapes on the T4 with the vendor at a higher clock (1.15x, 1.07x) ([phases 9-10](results/phase-9-10-matmul-ladder.md)). Phase 7 baseline was: ours vs best baseline median 0.17x (matmul), 0.31x (layernorm), 0.23x (softmax); only 2 tiny odd matmul shapes faster |
 | 22 | Kernel library with build system | R§10 | ✅ | CMake, presets, `find_package` |
 | 23 | Never report speed for a kernel failing tests | R§11 | ✅ | Enforced in code: a non-PASS row carries no timing (tested). It caught a real bug in our Triton baseline |
 

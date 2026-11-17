@@ -1,0 +1,42 @@
+
+== tools
+nvidia-smi: /opt/bin/nvidia-smi
+nvcc: /usr/local/cuda/bin/nvcc
+ncu: /usr/local/cuda/bin/ncu
+nsys: /usr/local/bin/nsys
+compute-sanitizer: /usr/local/cuda/bin/compute-sanitizer
+cmake: /usr/local/bin/cmake
+ninja: /usr/local/bin/ninja
+python: /usr/bin/python3
+
+== nvidia-smi
+name, compute_cap, driver_version, memory.total [MiB], clocks.max.sm [MHz], clocks.max.memory [MHz], power.limit [W]
+Tesla T4, 7.5, 580.178.04, 15360 MiB, 1590 MHz, 5001 MHz, 70.00 W
+Tesla T4, 7.5, 580.178.04, 15360 MiB, 1590 MHz, 5001 MHz, 70.00 W
+
+== nvcc
+Cuda compilation tools, release 13.0, V13.0.88
+Build cuda_13.0.r13.0/compiler.36424714_0
+
+== ncu
+Version 2025.3.1.0 (build 36398880) (public-release)
+
+== nsys
+NVIDIA Nsight Systems version 2025.3.1.0
+
+== compute-sanitizer
+Version 2025.3.1.0 (build 36400806) (public-release)
+
+== cmake
+cmake version 3.31.10
+
+== venv (/tmp/ccml-venv from /usr/bin/python3, system site packages: reuses the CUDA PyTorch)
+venv unusable here; using /usr/bin/python3 directly
+python in use: /usr/bin/python3
+torch 2.11.0+cu130 cuda 13.0 available True Tesla T4
+triton 3.6.0
+numpy 2.1.3
+pandas 2.3.3
+matplotlib 3.10.0
+pytest 8.4.2
+pynvml ok

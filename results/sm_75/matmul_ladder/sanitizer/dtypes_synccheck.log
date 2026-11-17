@@ -1,0 +1,105 @@
+========= COMPUTE-SANITIZER
+[PASS] dtypes.F16_matmul_all_variants
+       f16 matmul naive 1x1x1  max_abs=0.000000 max_rel=0.000088  abs_tol=6.050e-08 rel_tol=9.775e-04
+       f16 matmul tiled 1x1x1  max_abs=0.000000 max_rel=0.000088  abs_tol=6.050e-08 rel_tol=9.775e-04
+       f16 matmul register_tiled 1x1x1  max_abs=0.000000 max_rel=0.000088  abs_tol=6.050e-08 rel_tol=9.775e-04
+       f16 matmul vectorized 1x1x1  max_abs=0.000000 max_rel=0.000088  abs_tol=6.050e-08 rel_tol=9.775e-04
+       f16 matmul double_buffered 1x1x1  max_abs=0.000000 max_rel=0.000088  abs_tol=6.050e-08 rel_tol=9.775e-04
+       f16 matmul naive 17x33x65  max_abs=0.007761 max_rel=0.000470  abs_tol=6.053e-05 rel_tol=9.843e-04
+       f16 matmul tiled 17x33x65  max_abs=0.007761 max_rel=0.000470  abs_tol=6.053e-05 rel_tol=9.843e-04
+       f16 matmul register_tiled 17x33x65  max_abs=0.007761 max_rel=0.000470  abs_tol=6.053e-05 rel_tol=9.843e-04
+       f16 matmul vectorized 17x33x65  max_abs=0.007761 max_rel=0.000470  abs_tol=6.053e-05 rel_tol=9.843e-04
+       f16 matmul double_buffered 17x33x65  max_abs=0.007761 max_rel=0.000470  abs_tol=6.053e-05 rel_tol=9.843e-04
+       f16 matmul naive 128x128x128  max_abs=0.015261 max_rel=0.000486  abs_tol=1.217e-04 rel_tol=9.874e-04
+       f16 matmul tiled 128x128x128  max_abs=0.015261 max_rel=0.000486  abs_tol=1.217e-04 rel_tol=9.874e-04
+       f16 matmul register_tiled 128x128x128  max_abs=0.015261 max_rel=0.000486  abs_tol=1.217e-04 rel_tol=9.874e-04
+       f16 matmul vectorized 128x128x128  max_abs=0.015261 max_rel=0.000486  abs_tol=1.217e-04 rel_tol=9.874e-04
+       f16 matmul double_buffered 128x128x128  max_abs=0.015261 max_rel=0.000486  abs_tol=1.217e-04 rel_tol=9.874e-04
+       f16 matmul naive 64x257x1023  max_abs=0.031191 max_rel=0.039593  abs_tol=9.682e-04 rel_tol=1.007e-03
+       f16 matmul tiled 64x257x1023  max_abs=0.031191 max_rel=0.039593  abs_tol=9.682e-04 rel_tol=1.007e-03
+       f16 matmul register_tiled 64x257x1023  max_abs=0.031191 max_rel=0.039593  abs_tol=9.682e-04 rel_tol=1.007e-03
+       f16 matmul vectorized 64x257x1023  max_abs=0.031191 max_rel=0.039593  abs_tol=9.682e-04 rel_tol=1.007e-03
+       f16 matmul double_buffered 64x257x1023  max_abs=0.031191 max_rel=0.039593  abs_tol=9.682e-04 rel_tol=1.007e-03
+       f16 matmul naive 3x768x768  max_abs=0.028860 max_rel=0.000859  abs_tol=7.559e-04 rel_tol=1.003e-03
+       f16 matmul tiled 3x768x768  max_abs=0.028860 max_rel=0.000859  abs_tol=7.559e-04 rel_tol=1.003e-03
+       f16 matmul register_tiled 3x768x768  max_abs=0.028860 max_rel=0.000859  abs_tol=7.559e-04 rel_tol=1.003e-03
+       f16 matmul vectorized 3x768x768  max_abs=0.028860 max_rel=0.000859  abs_tol=7.559e-04 rel_tol=1.003e-03
+       f16 matmul double_buffered 3x768x768  max_abs=0.028860 max_rel=0.000859  abs_tol=7.559e-04 rel_tol=1.003e-03
+       f16 matmul naive 256x96x2048  max_abs=0.061844 max_rel=0.002367  abs_tol=1.947e-03 rel_tol=1.020e-03
+       f16 matmul tiled 256x96x2048  max_abs=0.061844 max_rel=0.002367  abs_tol=1.947e-03 rel_tol=1.020e-03
+       f16 matmul register_tiled 256x96x2048  max_abs=0.061844 max_rel=0.002367  abs_tol=1.947e-03 rel_tol=1.020e-03
+       f16 matmul vectorized 256x96x2048  max_abs=0.061844 max_rel=0.002367  abs_tol=1.947e-03 rel_tol=1.020e-03
+       f16 matmul double_buffered 256x96x2048  max_abs=0.061844 max_rel=0.002367  abs_tol=1.947e-03 rel_tol=1.020e-03
+[PASS] dtypes.F16_layernorm
+       f16 layernorm 1x1 offset=0.000000  max_abs=0.000000 max_rel=0.000000  abs_tol=1.013e-06 rel_tol=9.775e-04
+       f16 layernorm 7x33 offset=0.000000  max_abs=0.000960 max_rel=0.000483  abs_tol=5.538e-06 rel_tol=9.820e-04
+       f16 layernorm 64x768 offset=0.000000  max_abs=0.001948 max_rel=0.002039  abs_tol=2.649e-05 rel_tol=1.003e-03
+       f16 layernorm 128x1025 offset=0.000000  max_abs=0.001952 max_rel=0.000936  abs_tol=3.059e-05 rel_tol=1.007e-03
+       f16 layernorm 16x4096 offset=0.000000  max_abs=0.001951 max_rel=0.000484  abs_tol=6.109e-05 rel_tol=1.038e-03
+       f16 layernorm 3x32000 offset=0.000000  max_abs=0.001938 max_rel=0.003487  abs_tol=1.707e-04 rel_tol=1.147e-03
+       f16 layernorm 64x768 offset=100.000000  max_abs=0.001936 max_rel=0.000486  abs_tol=2.649e-05 rel_tol=1.003e-03
+[PASS] dtypes.F16_softmax
+       f16 softmax 1x1 scale=1.000000  max_abs=0.000000 max_rel=0.000000  abs_tol=5.960e-08 rel_tol=9.775e-04
+       f16 softmax 7x33 scale=1.000000  max_abs=0.000047 max_rel=0.000447  abs_tol=5.960e-08 rel_tol=9.820e-04
+       f16 softmax 64x768 scale=1.000000  max_abs=0.000015 max_rel=0.001417  abs_tol=5.960e-08 rel_tol=1.003e-03
+       f16 softmax 128x1025 scale=1.000000  max_abs=0.000009 max_rel=0.003144  abs_tol=5.960e-08 rel_tol=1.007e-03
+       f16 softmax 16x4096 scale=1.000000  max_abs=0.000002 max_rel=0.006867  abs_tol=5.960e-08 rel_tol=1.038e-03
+       f16 softmax 3x32000 scale=1.000000  max_abs=0.000000 max_rel=0.081671  abs_tol=5.960e-08 rel_tol=1.147e-03
+       f16 softmax 32x512 scale=30.000000  max_abs=0.000240 max_rel=1.000000  abs_tol=5.960e-08 rel_tol=9.981e-04
+[PASS] dtypes.BF16_matmul_all_variants
+       bf16 matmul naive 1x1x1  max_abs=0.000000 max_rel=0.000252  abs_tol=9.024e-10 rel_tol=7.813e-03
+       bf16 matmul tiled 1x1x1  max_abs=0.000000 max_rel=0.000252  abs_tol=9.024e-10 rel_tol=7.813e-03
+       bf16 matmul register_tiled 1x1x1  max_abs=0.000000 max_rel=0.000252  abs_tol=9.024e-10 rel_tol=7.813e-03
+       bf16 matmul vectorized 1x1x1  max_abs=0.000000 max_rel=0.000252  abs_tol=9.024e-10 rel_tol=7.813e-03
+       bf16 matmul double_buffered 1x1x1  max_abs=0.000000 max_rel=0.000252  abs_tol=9.024e-10 rel_tol=7.813e-03
+       bf16 matmul naive 17x33x65  max_abs=0.060060 max_rel=0.003701  abs_tol=6.045e-05 rel_tol=7.820e-03
+       bf16 matmul tiled 17x33x65  max_abs=0.060060 max_rel=0.003701  abs_tol=6.045e-05 rel_tol=7.820e-03
+       bf16 matmul register_tiled 17x33x65  max_abs=0.060060 max_rel=0.003701  abs_tol=6.045e-05 rel_tol=7.820e-03
+       bf16 matmul vectorized 17x33x65  max_abs=0.060060 max_rel=0.003701  abs_tol=6.045e-05 rel_tol=7.820e-03
+       bf16 matmul double_buffered 17x33x65  max_abs=0.060060 max_rel=0.003701  abs_tol=6.045e-05 rel_tol=7.820e-03
+       bf16 matmul naive 128x128x128  max_abs=0.124879 max_rel=0.003879  abs_tol=1.217e-04 rel_tol=7.823e-03
+       bf16 matmul tiled 128x128x128  max_abs=0.124879 max_rel=0.003879  abs_tol=1.217e-04 rel_tol=7.823e-03
+       bf16 matmul register_tiled 128x128x128  max_abs=0.124879 max_rel=0.003879  abs_tol=1.217e-04 rel_tol=7.823e-03
+       bf16 matmul vectorized 128x128x128  max_abs=0.124879 max_rel=0.003879  abs_tol=1.217e-04 rel_tol=7.823e-03
+       bf16 matmul double_buffered 128x128x128  max_abs=0.124879 max_rel=0.003879  abs_tol=1.217e-04 rel_tol=7.823e-03
+       bf16 matmul naive 64x257x1023  max_abs=0.249150 max_rel=0.003857  abs_tol=9.681e-04 rel_tol=7.843e-03
+       bf16 matmul tiled 64x257x1023  max_abs=0.249150 max_rel=0.003857  abs_tol=9.681e-04 rel_tol=7.843e-03
+       bf16 matmul register_tiled 64x257x1023  max_abs=0.249150 max_rel=0.003857  abs_tol=9.681e-04 rel_tol=7.843e-03
+       bf16 matmul vectorized 64x257x1023  max_abs=0.249150 max_rel=0.003857  abs_tol=9.681e-04 rel_tol=7.843e-03
+       bf16 matmul double_buffered 64x257x1023  max_abs=0.249150 max_rel=0.003857  abs_tol=9.681e-04 rel_tol=7.843e-03
+       bf16 matmul naive 3x768x768  max_abs=0.248471 max_rel=0.003782  abs_tol=7.560e-04 rel_tol=7.839e-03
+       bf16 matmul tiled 3x768x768  max_abs=0.248471 max_rel=0.003782  abs_tol=7.560e-04 rel_tol=7.839e-03
+       bf16 matmul register_tiled 3x768x768  max_abs=0.248471 max_rel=0.003782  abs_tol=7.560e-04 rel_tol=7.839e-03
+       bf16 matmul vectorized 3x768x768  max_abs=0.248471 max_rel=0.003782  abs_tol=7.560e-04 rel_tol=7.839e-03
+       bf16 matmul double_buffered 3x768x768  max_abs=0.248471 max_rel=0.003782  abs_tol=7.560e-04 rel_tol=7.839e-03
+       bf16 matmul naive 256x96x2048  max_abs=0.490345 max_rel=0.004111  abs_tol=1.947e-03 rel_tol=7.856e-03
+       bf16 matmul tiled 256x96x2048  max_abs=0.490345 max_rel=0.004111  abs_tol=1.947e-03 rel_tol=7.856e-03
+       bf16 matmul register_tiled 256x96x2048  max_abs=0.490345 max_rel=0.004111  abs_tol=1.947e-03 rel_tol=7.856e-03
+       bf16 matmul vectorized 256x96x2048  max_abs=0.490345 max_rel=0.004111  abs_tol=1.947e-03 rel_tol=7.856e-03
+       bf16 matmul double_buffered 256x96x2048  max_abs=0.490345 max_rel=0.004111  abs_tol=1.947e-03 rel_tol=7.856e-03
+[PASS] dtypes.BF16_layernorm
+       bf16 layernorm 1x1 offset=0.000000  max_abs=0.000000 max_rel=0.000000  abs_tol=9.537e-07 rel_tol=7.813e-03
+       bf16 layernorm 7x33 offset=0.000000  max_abs=0.007654 max_rel=0.003513  abs_tol=5.478e-06 rel_tol=7.818e-03
+       bf16 layernorm 64x768 offset=0.000000  max_abs=0.015400 max_rel=0.003876  abs_tol=2.643e-05 rel_tol=7.839e-03
+       bf16 layernorm 128x1025 offset=0.000000  max_abs=0.015616 max_rel=0.003890  abs_tol=3.053e-05 rel_tol=7.843e-03
+       bf16 layernorm 16x4096 offset=0.000000  max_abs=0.015526 max_rel=0.003878  abs_tol=6.104e-05 rel_tol=7.874e-03
+       bf16 layernorm 3x32000 offset=0.000000  max_abs=0.015490 max_rel=0.003890  abs_tol=1.706e-04 rel_tol=7.983e-03
+       bf16 layernorm 64x768 offset=100.000000  max_abs=0.015438 max_rel=0.003876  abs_tol=2.643e-05 rel_tol=7.839e-03
+[PASS] dtypes.BF16_softmax
+       bf16 softmax 1x1 scale=1.000000  max_abs=0.000000 max_rel=0.000000  abs_tol=2.351e-38 rel_tol=7.813e-03
+       bf16 softmax 7x33 scale=1.000000  max_abs=0.001774 max_rel=0.003727  abs_tol=2.351e-38 rel_tol=7.818e-03
+       bf16 softmax 64x768 scale=1.000000  max_abs=0.000108 max_rel=0.003886  abs_tol=2.351e-38 rel_tol=7.839e-03
+       bf16 softmax 128x1025 scale=1.000000  max_abs=0.000100 max_rel=0.003880  abs_tol=2.351e-38 rel_tol=7.843e-03
+       bf16 softmax 16x4096 scale=1.000000  max_abs=0.000029 max_rel=0.003881  abs_tol=2.351e-38 rel_tol=7.874e-03
+       bf16 softmax 3x32000 scale=1.000000  max_abs=0.000003 max_rel=0.003845  abs_tol=2.351e-38 rel_tol=7.983e-03
+       bf16 softmax 32x512 scale=30.000000  max_abs=0.001856 max_rel=1.000000  abs_tol=2.351e-38 rel_tol=7.834e-03
+[PASS] dtypes.f16_overflow_rounds_to_inf_bf16_does_not
+[PASS] dtypes.f16_extreme_magnitudes_stay_finite
+[PASS] dtypes.softmax_masking_and_nan_policy_f16
+[PASS] dtypes.softmax_masking_and_nan_policy_bf16
+[PASS] dtypes.layernorm_constant_row_is_beta_f16
+[PASS] dtypes.layernorm_constant_row_is_beta_bf16
+[PASS] dtypes.errors_name_the_dtype_entry_point
+
+13 passed, 0 failed, 0 skipped
+========= ERROR SUMMARY: 0 errors
