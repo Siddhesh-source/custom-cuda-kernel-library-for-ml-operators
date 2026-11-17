@@ -89,6 +89,35 @@ The factor 2 on `u`: half a unit from the final rounding, plus the f32 result
 itself being up to its own tolerance away from the reference before rounding.
 The PyTorch tests (`python/tests/test_torch_dtypes.py`) use the same formulas.
 
+### Unfused 16-bit pipelines (Phase 11)
+
+A pipeline that rounds an intermediate to a 16-bit type before a second kernel
+(a matmul followed by a separate bias/GELU/residual kernel, as PyTorch's
+`Linear` then `GELU` does) carries one extra rounding the fused contract does
+not: up to `u * |intermediate_i|`, element-specific. The benchmark gate admits
+exactly that for such candidates, through a per-element allowance
+(`ccml_test::compare(got, ref, tol, extra_abs)`, unit-tested in
+`harness.compare_per_element_allowance`):
+
+    bound_i = abs_tol + rel_tol * |ref_i| + 1.2 * u(dtype) * |A B|_i
+
+(1.2 covers the GELU slope, at most 1.13.) It applies to "+separate"
+candidates and to cuBLASLt's epilogue, whose error measured equal to theirs.
+**ccml's fused kernels are held to the strict bound.** See
+[optimization-log.md](optimization-log.md) entry 8.
+
+### Layer norm in FP32: the pivot shift (Phase 12)
+
+`TWO_PASS` reduces in FP64 because a FP32 mean accumulated at magnitude 10000
+carries ~5e-4 of error, 5% of a 0.01 standard deviation. `WELFORD`,
+`WARP_PER_ROW`, `VECTORIZED` and the fused residual kernels reduce in FP32 but
+first subtract a pivot (the row's first element): d = x - p is exact when x
+and p are within a factor of 2 (Sterbenz) and otherwise rounds relative to |d|,
+so the statistics are of small numbers and x - mean is formed as d - mean(d).
+They are held to **the same FP32 tolerance** as TWO_PASS, including mean 10000
+/ stddev 0.01 and a pivot 1000 standard deviations from its row
+([optimization-log.md](optimization-log.md) entry 9).
+
 ## Measured results
 
 To be filled in from actual runs. Do not populate this table by hand: paste the
@@ -147,6 +176,35 @@ bound governs.
 subnormal range or below it. Those are rounded in absolute steps of 2^-24 and
 covered by the floor; the absolute error there is at most 2.4e-04 on
 scale-30 inputs.
+
+### Tensor Core matmul and the layer norm variants (Phases 11-12, Tesla T4)
+
+Worst normalized error (|error| / bound; <= 1 passes) printed by the test
+executables under compute-sanitizer memcheck on Kaggle Tesla T4 sessions:
+Phase 11 at commit `5edb43d` (`results/sm_75/tensor_cores/sanitizer/`), Phase
+12 at `aab20ff` (`results/sm_75/layernorm_variants/sanitizer/`). BF16 Tensor
+Core cases SKIP on the T4 (sm_80+); on the local sm_89 they pass with the same
+margins (log entries 4-8).
+
+| Operator | Algorithm | Cases | Worst normalized | Verdict |
+|---|---|---|---|---|
+| matmul f16 | wmma, mma_sync, split_k, split_k_atomic, mma_sync_swizzled | every TC config x 17 awkward shapes, k-steps 1-1000, misaligned views | 0.499 | **PASS** |
+| matmul f16 | fused epilogue (mma_sync, split_k) | 7 epilogue combinations x 8 shapes | 0.488 | **PASS** |
+| layernorm f32 | two_pass | 16 cases incl. 4 offsets | 0.011 | **PASS** |
+| layernorm f32 | welford, warp_per_row, vectorized | same 16 cases (cols <= 1024 for the warp kernels) | 0.062 | **PASS** |
+| layernorm f32 | welford / warp_per_row / vectorized | pivot 1000 stddevs from its row | 0.090 / 0.115 / 0.151 | **PASS** |
+| layernorm f32 | warp_per_row, every per-lane bucket | 23 widths, odd widths offset +300 | 0.048 | **PASS** |
+| layernorm f32 | vectorized, vector and fallback paths | 20 widths + misaligned views | 0.072 | **PASS** |
+| layernorm_residual f32 | vectorized, welford, auto | 10 shapes x 4 combinations + offset + misaligned | 0.040 | **PASS** |
+
+The FP32 layer norm variants carry about 6x the error of FP64 two-pass (0.062
+against 0.011 of the bound) and stay 16x inside it. The 16-bit results sit at
+about half the bound, which is the final rounding.
+
+**Determinism (C3), T4:** over 20 runs of a 16 x 768 x 3072 matmul, split_k
+differed bitwise 0 times and split_k_atomic 19 of 19 times.
+`ccml_layernorm_residual`'s sum_out is checked bitwise against the host's
+(x + r) + b rounded once, in all three dtypes.
 
 ### NaN, infinity and masking policy
 

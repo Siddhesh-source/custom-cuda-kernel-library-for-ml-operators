@@ -111,9 +111,9 @@ Two passes rather than the single sum/sum-of-squares pass on purpose. The
 single-pass form computes variance as `E[x^2] - E[x]^2`, which loses
 catastrophic precision when the mean is large relative to the spread, which is
 exactly what `layernorm.large_offset_small_variance` tests. Welford's method is
-the numerically sound single-pass alternative and is reserved as a separate
-algorithm (`CCML_LAYERNORM_WELFORD`) rather than folded in here, so that the two
-can be compared rather than one silently replacing the other.
+the numerically sound single-pass alternative; it is a separate algorithm
+(`CCML_LAYERNORM_WELFORD`, Phase 12) rather than folded in here, so that the two
+are compared rather than one silently replacing the other.
 
 Variance is the biased (1/cols) estimator, matching
 `torch.nn.functional.layer_norm`. `gamma` and `beta` are independently optional.
@@ -126,9 +126,14 @@ which against a standard deviation of 0.01 is a **5% error in every output
 element**. No summation order fixes this — the mean has to be held to better
 than float32 precision and carried in that precision through the subtraction.
 The cost is fp64 arithmetic, which consumer GPUs run at a fraction of fp32
-rate. Whether that matters here is **unmeasured**: layer normalization should be
-memory-bound, so a few fp64 operations per element may be hidden entirely. The
-obviously-correct version ships first and the question is left to measurement.
+rate. **Measured in Phase 12:** it is not hidden. Nsight Compute shows
+`TWO_PASS` with the FP64 pipe 87% busy and DRAM at 13% (sm_89), and the FP32
+variants run 3.6-11x faster. They keep the same accuracy class without FP64 by
+subtracting a pivot (the row's first element) before accumulating, which
+removes the large intermediate instead of carrying it in double precision;
+they meet the same FP32 tolerance, including mean 10000 / stddev 0.01
+([optimization-log.md](optimization-log.md) entry 9, [correctness.md](correctness.md)).
+`TWO_PASS` remains as the FP64 reference variant.
 
 Reduction strategy: warp shuffles first, then one warp reduces the per-warp
 partials through shared memory. Two barriers in total, against one per level for
