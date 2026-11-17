@@ -201,6 +201,7 @@ template <typename D>
 void check_layernorm(const ccml_test::Context& ctx, int rows, int cols, float offset,
                      ccml_layernorm_algo algo = CCML_LAYERNORM_AUTO) {
   using Pub = typename D::Pub;
+  if (algo == CCML_LAYERNORM_WARP_PER_ROW && cols > 1024) return; /* refused by design */
   const std::size_t n = static_cast<std::size_t>(rows) * cols;
   std::vector<float> x_raw(n), g_raw(static_cast<std::size_t>(cols)), b_raw(static_cast<std::size_t>(cols));
   ccml_support::Rng rng(static_cast<std::uint64_t>(rows) * 7 + cols);
@@ -272,7 +273,8 @@ void check_softmax(const ccml_test::Context& ctx, int rows, int cols, float scal
 const int kMatmulShapes[][3] = {{1, 1, 1}, {17, 33, 65}, {128, 128, 128},
                                 {64, 257, 1023}, {3, 768, 768}, {256, 96, 2048}};
 const ccml_layernorm_algo kLayerNormAlgos[] = {CCML_LAYERNORM_TWO_PASS,
-                                                CCML_LAYERNORM_WELFORD};
+                                                CCML_LAYERNORM_WELFORD,
+                                                CCML_LAYERNORM_WARP_PER_ROW};
 const int kRowShapes[][2] = {{1, 1}, {7, 33}, {64, 768}, {128, 1025}, {16, 4096}, {3, 32000}};
 
 }  // namespace

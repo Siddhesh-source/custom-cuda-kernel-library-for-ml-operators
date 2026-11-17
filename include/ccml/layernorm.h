@@ -12,7 +12,10 @@ extern "C" {
 typedef enum ccml_layernorm_algo {
   CCML_LAYERNORM_AUTO     = 0, /* library picks; currently resolves to TWO_PASS */
   CCML_LAYERNORM_TWO_PASS = 1, /* separate mean and variance reductions */
-  CCML_LAYERNORM_WELFORD  = 2  /* single-pass FP32 Welford on pivot-shifted data, block per row */
+  CCML_LAYERNORM_WELFORD  = 2, /* single-pass FP32 Welford on pivot-shifted data, block per row */
+  /* One warp per row, the row held in registers (cols <= 1024; wider rows
+     return CCML_ERROR_UNSUPPORTED_SHAPE). */
+  CCML_LAYERNORM_WARP_PER_ROW = 3
 } ccml_layernorm_algo;
 
 CCML_API const char* ccml_layernorm_algo_name(ccml_layernorm_algo algo);

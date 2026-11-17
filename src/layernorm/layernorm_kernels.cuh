@@ -230,6 +230,65 @@ __global__ void layernorm_welford(T* y, const T* x, const T* gamma, const T* bet
   }
 }
 
+/* ------------------------------------------------------ warp per row ---
+ *
+ * docs/optimization-log.md entry 10. One warp per row (cols <= 32 * kPer), the
+ * row held in registers: read once, pivot-shifted as in entry 9, exact
+ * two-pass statistics over the registers (warp-shuffle sums, no division per
+ * element, no block barriers), output written from the registers.
+ *
+ *   grid = (ceil(rows / kRowsPerBlock)), block = (32 * kRowsPerBlock)
+ */
+constexpr int kRowsPerBlock = 4;
+
+__device__ __forceinline__ float warp_sum(float v) {
+#pragma unroll
+  for (int offset = 16; offset > 0; offset >>= 1) v += __shfl_xor_sync(0xffffffffu, v, offset);
+  return v;
+}
+
+template <typename T, int kPer>
+__global__ void __launch_bounds__(32 * kRowsPerBlock)
+layernorm_warp_per_row(T* y, const T* x, const T* gamma, const T* beta, int rows, int cols,
+                       float eps) {
+  using ccml::detail::to_float;
+  const int lane = static_cast<int>(threadIdx.x) % 32;
+  const int row = static_cast<int>(blockIdx.x) * kRowsPerBlock + static_cast<int>(threadIdx.x) / 32;
+  if (row >= rows) return; /* whole warp: no block-level barrier below */
+  const long long base = static_cast<long long>(row) * cols;
+  const T* __restrict__ row_in = x + base;
+  T* __restrict__ row_out = y + base;
+
+  const float pivot = to_float(row_in[0]);
+  float d[kPer];
+  float sum = 0.0f;
+#pragma unroll
+  for (int i = 0; i < kPer; ++i) {
+    const int c = lane + 32 * i;
+    d[i] = c < cols ? to_float(row_in[c]) - pivot : 0.0f;
+    sum += d[i];
+  }
+  const float mean = warp_sum(sum) / static_cast<float>(cols);
+  float sq = 0.0f;
+#pragma unroll
+  for (int i = 0; i < kPer; ++i) {
+    const int c = lane + 32 * i;
+    const float dev = d[i] - mean;
+    if (c < cols) sq += dev * dev;
+  }
+  const float rstd = 1.0f / sqrtf(warp_sum(sq) / static_cast<float>(cols) + eps);
+#pragma unroll
+  for (int i = 0; i < kPer; ++i) {
+    const int c = lane + 32 * i;
+    if (c < cols) {
+      float v = (d[i] - mean) * rstd;
+      if (gamma != nullptr) v *= to_float(gamma[c]);
+      if (beta != nullptr) v += to_float(beta[c]);
+      row_out[c] = ccml::detail::from_float<T>(v);
+    }
+  }
+}
+
 }  // namespace kernels
 }  // namespace ccml
 

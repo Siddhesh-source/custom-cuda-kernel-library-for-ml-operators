@@ -347,7 +347,8 @@ CCML_TEST(layernorm, rejects_null_and_nonpositive_dimensions) {
 /* Each built algorithm must meet the same FP32 tolerance on every case above:
    the numerics cases (mean far from zero) most of all, because the FP32
    variants rely on the pivot shift for them (optimization log entry 9). */
-const ccml_layernorm_algo kAlgos[] = {CCML_LAYERNORM_TWO_PASS, CCML_LAYERNORM_WELFORD};
+const ccml_layernorm_algo kAlgos[] = {CCML_LAYERNORM_TWO_PASS, CCML_LAYERNORM_WELFORD,
+                                      CCML_LAYERNORM_WARP_PER_ROW};
 
 CCML_TEST(layernorm, every_algorithm_on_every_case) {
   struct Case {
@@ -363,6 +364,9 @@ CCML_TEST(layernorm, every_algorithm_on_every_case) {
   for (ccml_layernorm_algo algo : kAlgos) {
     double worst = 0.0;
     for (const Case& c : cases) {
+      /* WARP_PER_ROW holds the row in one warp: cols <= 1024 only (the
+         rejection of wider rows is its own test below). */
+      if (algo == CCML_LAYERNORM_WARP_PER_ROW && c.shape.cols > 1024) continue;
       CaseOptions o;
       o.input_mean = c.mean;
       o.input_stddev = c.stddev;
@@ -374,13 +378,32 @@ CCML_TEST(layernorm, every_algorithm_on_every_case) {
   }
 }
 
+/* Every per-lane register bucket of WARP_PER_ROW (1, 2, 4, 8, 16, 24, 32
+   values per lane), at both edges of each, and its refusal past 1024. */
+CCML_TEST(layernorm, warp_per_row_every_bucket) {
+  double worst = 0.0;
+  for (int cols : {1, 2, 31, 32, 33, 63, 64, 65, 127, 128, 129, 255, 256, 257, 511, 512, 513,
+                   767, 768, 769, 1000, 1023, 1024}) {
+    CaseOptions o;
+    o.algo = CCML_LAYERNORM_WARP_PER_ROW;
+    o.input_mean = cols % 2 ? 300.0f : 0.0f; /* odd widths also carry an offset */
+    worst = std::fmax(worst, run_case(ctx, Shape{37, cols}, o, 1000 + cols).max_normalized_error);
+  }
+  ctx.note("worst normalized error " + std::to_string(worst));
+  DeviceBuffer d(2 * 1025);
+  ctx.check(ccml_layernorm_f32(d.data(), d.data(), nullptr, nullptr, 2, 1025, kEps,
+                               CCML_LAYERNORM_WARP_PER_ROW, nullptr) ==
+                CCML_ERROR_UNSUPPORTED_SHAPE,
+            "cols = 1025 is refused with UNSUPPORTED_SHAPE, never truncated");
+}
+
 /* A pivot that is an outlier of its row (first element 1000 standard
    deviations from the rest) must not break the FP32 algorithms: Welford's
    update is stable for any offset, the pivot only has to keep the numbers
    small. */
 CCML_TEST(layernorm, outlier_pivot) {
   for (ccml_layernorm_algo algo : kAlgos) {
-    const int rows = 8, cols = 1000;
+    const int rows = 8, cols = 1000; /* <= 1024: every algorithm runs it */
     std::vector<float> host_x(static_cast<std::size_t>(rows) * cols);
     Rng(900).normal(host_x.data(), host_x.size(), 50.0f, 0.1f);
     for (int r = 0; r < rows; ++r) host_x[static_cast<std::size_t>(r) * cols] = 150.0f;

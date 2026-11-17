@@ -31,6 +31,39 @@ ccml_layernorm_algo resolve(ccml_layernorm_algo algo) {
   return (algo == CCML_LAYERNORM_AUTO) ? CCML_LAYERNORM_TWO_PASS : algo;
 }
 
+/* Warp per row (entry 10): the per-lane register count is the smallest bucket
+   that holds the row, so short rows do not carry 32 registers. */
+template <typename T, int kPer>
+ccml_status launch_wpr(T* y, const T* x, const T* gamma, const T* beta, int rows, int cols,
+                       float eps, cudaStream_t stream) {
+  constexpr int kRows = ccml::kernels::kRowsPerBlock;
+  ccml::detail::LaunchConfig config;
+  config.block = dim3(32 * kRows, 1, 1);
+  config.grid = dim3(static_cast<unsigned>((rows + kRows - 1) / kRows), 1, 1);
+  /* Through a pointer: the template argument list's comma would split the macro. */
+  void (*const layernorm_warp_per_row)(T*, const T*, const T*, const T*, int, int, float) =
+      &ccml::kernels::layernorm_warp_per_row<T, kPer>;
+  CCML_LAUNCH(layernorm_warp_per_row, config, stream, y, x, gamma, beta, rows, cols, eps);
+  return CCML_SUCCESS;
+}
+
+template <typename T>
+ccml_status launch_warp_per_row(T* y, const T* x, const T* gamma, const T* beta, int rows,
+                                int cols, float eps, cudaStream_t stream,
+                                const std::string& fn) {
+  const int per = (cols + 31) / 32;
+  if (per <= 1) return launch_wpr<T, 1>(y, x, gamma, beta, rows, cols, eps, stream);
+  if (per <= 2) return launch_wpr<T, 2>(y, x, gamma, beta, rows, cols, eps, stream);
+  if (per <= 4) return launch_wpr<T, 4>(y, x, gamma, beta, rows, cols, eps, stream);
+  if (per <= 8) return launch_wpr<T, 8>(y, x, gamma, beta, rows, cols, eps, stream);
+  if (per <= 16) return launch_wpr<T, 16>(y, x, gamma, beta, rows, cols, eps, stream);
+  if (per <= 24) return launch_wpr<T, 24>(y, x, gamma, beta, rows, cols, eps, stream);
+  if (per <= 32) return launch_wpr<T, 32>(y, x, gamma, beta, rows, cols, eps, stream);
+  ccml::detail::set_last_error(
+      (fn + ": WARP_PER_ROW holds a row in one warp's registers, so cols <= 1024").c_str());
+  return CCML_ERROR_UNSUPPORTED_SHAPE;
+}
+
 /* One implementation for every storage type; the public entry points below are
    thin instantiations of it. */
 template <typename Public>
@@ -70,6 +103,10 @@ ccml_status layernorm(Public* y_pub, const Public* x_pub, const Public* gamma_pu
       return CCML_SUCCESS;
     }
 
+    case CCML_LAYERNORM_WARP_PER_ROW:
+      return launch_warp_per_row(y, x, gamma, beta, rows, cols, eps, stream,
+                                 fn_name<Public>());
+
     default:
       ccml::detail::set_last_error((fn_name<Public>() + ": unknown algorithm").c_str());
       return CCML_ERROR_INVALID_ARGUMENT;
@@ -85,6 +122,7 @@ const char* ccml_layernorm_algo_name(ccml_layernorm_algo algo) {
     case CCML_LAYERNORM_AUTO:     return "auto";
     case CCML_LAYERNORM_TWO_PASS: return "two_pass";
     case CCML_LAYERNORM_WELFORD:  return "welford";
+    case CCML_LAYERNORM_WARP_PER_ROW: return "warp_per_row";
   }
   return "unknown";
 }

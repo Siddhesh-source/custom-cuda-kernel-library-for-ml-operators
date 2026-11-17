@@ -31,7 +31,8 @@ namespace {
 constexpr float kEps = 1e-5f;
 
 /* Every variant the bench times. */
-const ccml_layernorm_algo kAlgos[] = {CCML_LAYERNORM_TWO_PASS, CCML_LAYERNORM_WELFORD};
+const ccml_layernorm_algo kAlgos[] = {CCML_LAYERNORM_TWO_PASS, CCML_LAYERNORM_WELFORD,
+                                      CCML_LAYERNORM_WARP_PER_ROW};
 
 ccml_status run(float* y, const float* x, const float* g, const float* b, int rows, int cols,
                 ccml_layernorm_algo algo, cudaStream_t s) {

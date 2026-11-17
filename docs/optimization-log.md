@@ -1276,7 +1276,8 @@ L2 and exceed DRAM bandwidth.
 
 ## 10. Layernorm: warp per row, row resident in registers (`CCML_LAYERNORM_WARP_PER_ROW`)
 
-**Status:** hypothesis committed before the code.
+**Status:** implemented and correct (FP32, FP16, BF16; cols <= 1024). Local
+sm_89 evidence below; T4 result at the end of the entry when it lands.
 
 ### Hypothesis
 
@@ -1315,3 +1316,67 @@ lanes x up to 32 values each, in registers.
 **What would falsify it:** no gain at rows >= 2048 on the T4 would mean the
 second read was free (served by L1) and the kernel was already at the DRAM
 limit; that would be recorded, and the variant kept only for mid sizes.
+
+### Change
+
+- `warp_sum` and `layernorm_warp_per_row<T, kPer>` in
+  `src/layernorm/layernorm_kernels.cuh`; `launch_warp_per_row` picks kPer from
+  {1, 2, 4, 8, 16, 24, 32} values per lane; cols > 1024 returns
+  `CCML_ERROR_UNSUPPORTED_SHAPE`.
+- Tests: `layernorm.warp_per_row_every_bucket` (23 widths at both edges of
+  every bucket, odd widths with a +300 offset; the 1025-column refusal);
+  WARP_PER_ROW joins `every_algorithm_on_every_case`, `outlier_pivot` and the
+  FP16/BF16 dtype tests. Worst normalized error 0.115 (outlier pivot).
+
+### Evidence
+
+**Timings, local sm_89 (indicative), warm L2, median of 200**
+(`results/sm_89/layernorm_warp_per_row.csv`):
+
+| Shape | welford f32 | **warp_per_row f32** | GB/s | welford f16 | warp_per_row f16 |
+|---|---|---|---|---|---|
+| 8192 x 768 | 431 us | 439 (0.98x) | 115 | 332 | **218 (1.52x)** |
+| 8192 x 1024 | 561 | 586 (0.96x) | 115 | 377 | **292 (1.29x)** |
+| 4096 x 1000 | 347 | **282 (1.23x)** | 116 | 167 | **61.4 (2.72x)** |
+| 2048 x 768 | 89.1 | **23.6 (3.78x)** | 535 (L2) | 77.8 | **24.6 (3.17x)** |
+| 512 x 1024 | 25.6 | **13.3 (1.92x)** | 316 (L2) | 24.6 | **14.3 (1.71x)** |
+| 128 x 768 | 10.2 | **7.2 (1.43x)** | 111 | 9.2 | **7.2 (1.29x)** |
+| 16 x 1024 | 5.1 | 8.2 (**0.62x**) | 17 | 6.1 | 8.2 (**0.75x**) |
+| 1 x 768 | 6.1 | 8.2 (**0.75x**) | 1.5 | 5.1 | 7.2 (**0.71x**) |
+
+**Nsight Compute, local sm_89, FP32** (`profiles/sm_89/layernorm/welford_vs_warp_per_row_*`;
+under the profiler caches are flushed between passes, so these are cold):
+
+| Metric (2048 x 768 / 8192 x 768) | welford | warp_per_row |
+|---|---|---|
+| Duration under the profiler | 105 / 442 us | **61.5 / 347 us** |
+| Instructions executed | 10.1 M / 40.2 M | **1.75 M / 7.00 M (5.75x fewer)** |
+| DRAM bytes read | 6.32 / 26.0 MB | 6.32 / 25.2 MB (the same: WELFORD's second read hit L2) |
+| DRAM throughput, % of peak | 47.2% / 78.1% | **80.5% / 89.4%** |
+| Stall barrier (per issue) | 0.68 / 0.84 | 0 / 0 |
+| Registers; warps active | 38; 94% | **80; 48%** |
+| Stall long_scoreboard | 2.96 / 4.65 | **17.3 / 24.7** (fewer warps waiting on more loads each) |
+
+### Verdict
+
+**Kept** for 128 <= rows and cols <= 1024 on sm_89; the T4 sets AUTO's
+thresholds.
+
+1. rows >= 2048: 1.1-1.4x: **mixed**: FP16 1.29-1.52x, FP32 0.96-0.98x warm
+   (both kernels at the DRAM peak, 115 GB/s) but 1.27x cold under the
+   profiler. The falsification clause applies to FP32 warm: WELFORD's second
+   read was free (L2 hits; DRAM bytes equal), so there was no DRAM traffic to
+   save, only instructions.
+2. Mid sizes at least 1.5x: **met** (1.7-3.8x at 512-2048 rows; 1.3-1.4x at
+   128).
+3. NCU: instructions down at least 2x (**5.75x**), DRAM the top limiter
+   (**89%**), loads per row halved: **the instruction and DRAM parts met; the
+   load part was moot** because L2 already absorbed the second read.
+4. Correctness across every bucket: **met.**
+
+**A loss, not predicted:** at 1-16 rows WARP_PER_ROW is 0.62-0.75x of
+WELFORD: 1-16 warps on a 14-SM GPU, each serially issuing up to 32 loads, take
+longer than 1-16 blocks of 8 warps sharing the row. AUTO must keep small row
+counts on WELFORD. The next limit, from NCU: 80 registers halve occupancy and
+`long_scoreboard` dominates; 128-bit loads (entry 11) cut the load count 4x
+(FP32) / 8x (16-bit).
