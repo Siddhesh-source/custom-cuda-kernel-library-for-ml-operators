@@ -365,3 +365,61 @@ MHz). **This is not a win and is not claimed as one.**
 clock correction. FMA-pipe utilization (63%) and occupancy (33%) are now the
 limits. The remaining reference.md ladder step is Tensor Cores (Phase 11),
 which changes the compute ceiling itself.
+
+---
+
+## 4. Matmul: Tensor Cores through WMMA (`CCML_MATMUL_WMMA`)
+
+**Status:** hypothesis committed before the code.
+
+### Hypothesis
+
+Every rung so far computes FP16 and BF16 matmuls on the **FP32 CUDA cores**:
+operands are widened to float on load and each thread issues one FFMA per
+multiply-add. On the T4 that caps a 16-bit matmul at the FP32 peak, 8.1
+TFLOPS, which is **12.5% of the 65 TFLOPS FP16 Tensor Core peak** (40 SMs x
+1024 FLOP/clk x 1.59 GHz, FP32 accumulate; `ccml_bench_peaks` now measures it).
+cuBLAS `GemmEx` FP16 uses the Tensor Cores; the local sm_89 harness run already
+shows it **3.6x faster** than DOUBLE_BUFFERED f16 on gpt2s.qkv.m128 (36.9 vs
+134 us), so the gap is the compute unit, not the tiling.
+
+**Change:** a new kernel on the double-buffered tiling of entry 3, with the
+inner product moved to Tensor Cores:
+
+- `wmma::mma_sync` on 16x16x16 fragments, FP16 (or BF16) in, FP32 accumulate.
+  One warp instruction does 4096 multiply-adds instead of 32.
+- Operands stay 16-bit in shared memory (no widening): half the shared bytes
+  per tile, and 128-bit global loads move 8 elements instead of 4.
+- Block tile 128x128x32, 8 warps, warp tile 64x32 (4x2 accumulator
+  fragments); register-prefetch double buffering as in entry 3; rows padded by
+  8 elements so `load_matrix_sync` rows start on different banks.
+- Epilogue through a per-warp 16x16 FP32 scratch tile (fragment layouts are
+  opaque), rounded once to the storage type, bounds-checked, so M, N, K stay
+  arbitrary.
+- BF16 fragments exist only on sm_80+: the BF16 instantiation is compiled under
+  an `__CUDA_ARCH__ >= 800` guard and returns `CCML_ERROR_NOT_IMPLEMENTED` on the
+  T4 (tests report SKIP, never PASS). FP32 input returns NOT_IMPLEMENTED too:
+  FP32 Tensor Cores (TF32) do not exist on sm_75 and rounding FP32 inputs to
+  FP16 would break the f32 contract.
+
+**Predictions** (FP16, warm L2; official on the T4, indicative on sm_89):
+
+1. Large shapes (M >= 512, N and K >= 768): WMMA is **at least 3x faster than
+   DOUBLE_BUFFERED f16** and reaches **40-70% of cuBLAS GemmEx FP16**, i.e.
+   roughly **15-30% of the theoretical Tensor Core peak**. It stays below
+   cuBLAS: `load_matrix_sync` from a padded row-major tile still conflicts in
+   some banks, and there is no swizzle or `ldmatrix` control yet (that is the
+   MMA_SYNC step).
+2. Decode shapes (M <= 16): **no meaningful gain over the best CUDA-core
+   configuration**. A 128-row tile wastes 87-99% of its rows, and at M = 1 the
+   operation is memory-bound (each weight is used once), so the compute unit
+   barely matters. Split-K (S2) is the step aimed there.
+3. Nsight Compute (sm_89): the **tensor pipe becomes active and the FMA pipe
+   falls to near idle**; executed instructions per FLOP fall **by at least
+   5x**. The top stall moves to shared-memory/MIO or to waiting on global
+   loads, which names the next step.
+
+**What would falsify it:** a large-shape speedup under 2x over DOUBLE_BUFFERED
+f16, which would mean the kernel is limited by something other than math
+throughput (the global loads, the epilogue, or shared-memory conflicts on the
+fragment loads); NCU decides which.
