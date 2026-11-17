@@ -1267,6 +1267,71 @@ matmul_mma_sync_splitk(float* W, const T* A, const T* B, int M, int N, int K, in
   }
 }
 
+/* ------------------------------------------------- fused epilogue (F1) --
+ *
+ * y = act(acc + bias[col]) + residual[row][col], in FP32, rounded once to T
+ * (docs/optimization-log.md, entry 8). bias and residual may be null; act is
+ * 0 none, 1 ReLU, 2 GELU (tanh form, as GPT-2's gelu_new and cuBLASLt). All
+ * three are uniform across the grid, so the branches never diverge. */
+struct EpilogueArgs {
+  const void* bias = nullptr;      /* [N], storage type T */
+  const void* residual = nullptr;  /* [M, N], storage type T */
+  int act = 0;
+};
+
+__device__ __forceinline__ float apply_act(float x, int act) {
+  if (act == 1) return x > 0.0f ? x : 0.0f;
+  if (act == 2) {
+    const float u = 0.7978845608028654f * (x + 0.044715f * x * x * x);
+    return 0.5f * x * (1.0f + tanhf(u));
+  }
+  return x;
+}
+
+template <typename T>
+__device__ __forceinline__ float epilogue_value(float acc, int row, int col, int N,
+                                                const EpilogueArgs& e) {
+  using ccml::detail::to_float;
+  float v = acc;
+  if (e.bias) v += to_float(static_cast<const T*>(e.bias)[col]);
+  v = apply_act(v, e.act);
+  if (e.residual) {
+    v += to_float(static_cast<const T*>(e.residual)[static_cast<long long>(row) * N + col]);
+  }
+  return v;
+}
+
+/* MMA_SYNC with the epilogue applied to the accumulators before the store. */
+template <typename T, int BM, int BN, int BK, int WM, int WN, bool kVec>
+__global__ void __launch_bounds__((BM / WM) * (BN / WN) * 32, 2)
+matmul_mma_sync_epilogue(T* C, const T* A, const T* B, int M, int N, int K, EpilogueArgs e) {
+  if constexpr (MmaSyncAvailable<T>::value) {
+    mma_sync_block_tile<T, BM, BN, BK, WM, WN, kVec>(
+        A, B, M, N, K, static_cast<int>(blockIdx.y) * BM, static_cast<int>(blockIdx.x) * BN, 0, K,
+        [&](int row, int col, float v0, float v1) {
+          if (row >= M) return;
+          const float y0 = col < N ? epilogue_value<T>(v0, row, col, N, e) : 0.0f;
+          const float y1 = col + 1 < N ? epilogue_value<T>(v1, row, col + 1, N, e) : 0.0f;
+          store_pair<T, kVec>(C, M, N, row, col, y0, y1);
+        });
+  }
+}
+
+/* splitk_reduce with the epilogue: the reduction already touches every
+   element once, so the epilogue costs only the bias/residual reads. */
+template <typename T>
+__global__ void splitk_reduce_epilogue(T* C, const float* W, int M, int N, int slices,
+                                       EpilogueArgs e) {
+  const long long count = static_cast<long long>(M) * N;
+  for (long long i = blockIdx.x * static_cast<long long>(blockDim.x) + threadIdx.x; i < count;
+       i += static_cast<long long>(gridDim.x) * blockDim.x) {
+    float sum = 0.0f;
+    for (int s = 0; s < slices; ++s) sum += W[static_cast<long long>(s) * count + i];
+    C[i] = ccml::detail::from_float<T>(
+        epilogue_value<T>(sum, static_cast<int>(i / N), static_cast<int>(i % N), N, e));
+  }
+}
+
 /* C[i] = round_to_T(sum over s of W[s][i]), in slice order. One thread per
    element, grid-stride. */
 template <typename T>

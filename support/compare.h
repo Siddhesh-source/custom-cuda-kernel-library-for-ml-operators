@@ -103,6 +103,17 @@ ErrorStats compare(const std::vector<float>&  got,
                    const std::vector<double>& reference,
                    const Tolerance&           tolerance);
 
+/* As above, with an additional per-element absolute allowance: element i is
+   within bound when |got - ref| <= abs_tol + rel_tol * |ref| + extra_abs[i]
+   (an empty vector adds nothing). For pipelines that round an intermediate to
+   a 16-bit type before a second kernel (a matmul followed by a separate
+   epilogue), the extra error of that rounding is element-specific:
+   unit_roundoff * |intermediate_i|. */
+ErrorStats compare(const std::vector<float>&  got,
+                   const std::vector<double>& reference,
+                   const Tolerance&           tolerance,
+                   const std::vector<double>& extra_abs);
+
 /* True only if every element met the bound and nothing was NaN or inf. */
 bool within(const ErrorStats& stats);
 

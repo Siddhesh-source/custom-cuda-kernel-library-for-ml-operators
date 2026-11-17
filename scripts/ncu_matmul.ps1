@@ -18,13 +18,14 @@ param(
   [int]$Count = 2,
   [string]$Dtype = "f16",
   [string]$Impls = "ccml",
-  [string]$Extra = ""
+  [string]$Extra = "",
+  [string]$Bench = "ccml_bench_matmul"
 )
 $ErrorActionPreference = "Continue"
 $root = Split-Path $PSScriptRoot -Parent
 $ncu = Get-ChildItem "C:\Program Files\NVIDIA Corporation\Nsight Compute*\ncu.bat" |
   Sort-Object FullName | Select-Object -Last 1 -ExpandProperty FullName
-$bench = Join-Path $root "build\local\bin\ccml_bench_matmul.exe"
+$bench = Join-Path $root "build\local\bin\$Bench.exe"
 $out = Join-Path $root "profiles\sm_89\matmul"
 New-Item -ItemType Directory -Force $out | Out-Null
 $log = Join-Path $out "ncu_$Name.log"

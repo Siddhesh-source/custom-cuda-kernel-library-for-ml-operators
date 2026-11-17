@@ -91,6 +91,27 @@ void CublasBaseline::release_lt() {
 }
 
 bool CublasBaseline::lt_prepare(int M, int N, int K, BlasType type) {
+  return lt_prepare_impl(M, N, K, type, CUBLASLT_EPILOGUE_DEFAULT, nullptr);
+}
+
+bool CublasBaseline::lt_prepare_epilogue(int M, int N, int K, BlasType type, const void* bias,
+                                         bool gelu) {
+  return lt_prepare_impl(M, N, K, type,
+                         gelu ? CUBLASLT_EPILOGUE_GELU_BIAS : CUBLASLT_EPILOGUE_BIAS, bias);
+}
+
+bool CublasBaseline::lt_matmul_epilogue(void* C, const void* A, const void* B,
+                                        const void* residual) {
+  if (lt_ == nullptr) return false;
+  const float alpha = 1.0f, beta = residual != nullptr ? 1.0f : 0.0f;
+  const void* c_in = residual != nullptr ? residual : C;
+  return cublasLtMatmul(lt(lt_handle_), lt_->op, &alpha, B, lt_->b, A, lt_->a, &beta, c_in,
+                        lt_->c, C, lt_->c, &lt_->algo, workspace_, workspace_bytes_,
+                        stream_) == CUBLAS_STATUS_SUCCESS;
+}
+
+bool CublasBaseline::lt_prepare_impl(int M, int N, int K, BlasType type, int epilogue,
+                                     const void* bias) {
   release_lt();
   lt_ = new LtPlan();
   const cudaDataType_t t = data_type(type);
@@ -98,6 +119,21 @@ bool CublasBaseline::lt_prepare(int M, int N, int K, BlasType type) {
     /* Scale type FP32 (alpha and beta are floats) with FP32 compute. */
     check_blas(cublasLtMatmulDescCreate(&lt_->op, CUBLAS_COMPUTE_32F, CUDA_R_32F),
                "cublasLtMatmulDescCreate");
+    if (epilogue != CUBLASLT_EPILOGUE_DEFAULT) {
+      /* Column-major view D^T [N, M]: the bias runs along D^T's rows, i.e. along
+         our N, as a row-major bias[N] must. */
+      const cublasLtEpilogue_t epi = static_cast<cublasLtEpilogue_t>(epilogue);
+      check_blas(cublasLtMatmulDescSetAttribute(lt_->op, CUBLASLT_MATMUL_DESC_EPILOGUE, &epi,
+                                                sizeof(epi)),
+                 "epilogue");
+      check_blas(cublasLtMatmulDescSetAttribute(lt_->op, CUBLASLT_MATMUL_DESC_BIAS_POINTER,
+                                                &bias, sizeof(bias)),
+                 "bias pointer");
+      const cudaDataType_t bias_type = t;
+      check_blas(cublasLtMatmulDescSetAttribute(lt_->op, CUBLASLT_MATMUL_DESC_BIAS_DATA_TYPE,
+                                                &bias_type, sizeof(bias_type)),
+                 "bias type");
+    }
     /* Column-major view: first operand B^T [N,K], second A^T [K,M], out [N,M]. */
     check_blas(cublasLtMatrixLayoutCreate(&lt_->b, t, N, K, N), "layout B");
     check_blas(cublasLtMatrixLayoutCreate(&lt_->a, t, K, M, K), "layout A");

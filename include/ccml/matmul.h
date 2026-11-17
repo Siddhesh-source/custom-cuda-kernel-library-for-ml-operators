@@ -85,6 +85,37 @@ CCML_API ccml_status ccml_matmul_bf16(ccml_bf16*       C,
                                       ccml_matmul_algo algo,
                                       cudaStream_t     stream);
 
+/* Activation for the fused epilogue. GELU uses the tanh form,
+   0.5 x (1 + tanh(sqrt(2/pi) (x + 0.044715 x^3))), as GPT-2 and cuBLASLt do. */
+typedef enum ccml_activation {
+  CCML_ACT_NONE = 0,
+  CCML_ACT_RELU = 1,
+  CCML_ACT_GELU_TANH = 2
+} ccml_activation;
+
+/*
+ * Fused linear layer: C = act(A * B + bias) + residual, row-major, 16-bit
+ * storage, FP32 accumulation and epilogue, one rounding on store.
+ *
+ *   bias     : [N] or NULL
+ *   residual : [M, N] or NULL (must not alias C)
+ *
+ * algo: CCML_MATMUL_MMA_SYNC (or AUTO) applies the epilogue to the
+ * accumulators; CCML_MATMUL_SPLIT_K applies it in the split-K reduction.
+ * Any other algo, and architectures without the Tensor Core instructions,
+ * return CCML_ERROR_NOT_IMPLEMENTED.
+ */
+CCML_API ccml_status ccml_matmul_epilogue_f16(ccml_f16* C, const ccml_f16* A, const ccml_f16* B,
+                                              const ccml_f16* bias, const ccml_f16* residual,
+                                              int M, int N, int K, ccml_activation act,
+                                              ccml_matmul_algo algo, cudaStream_t stream);
+
+CCML_API ccml_status ccml_matmul_epilogue_bf16(ccml_bf16* C, const ccml_bf16* A,
+                                               const ccml_bf16* B, const ccml_bf16* bias,
+                                               const ccml_bf16* residual, int M, int N, int K,
+                                               ccml_activation act, ccml_matmul_algo algo,
+                                               cudaStream_t stream);
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif

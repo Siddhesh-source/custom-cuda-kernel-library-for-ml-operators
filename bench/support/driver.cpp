@@ -95,7 +95,7 @@ Gated gate(const Candidate& candidate, const float* output, std::size_t count,
 
 Gated gate(const Candidate& candidate, const std::function<bool(std::vector<float>&)>& fetch,
            const std::vector<double>& reference, const ccml_test::Tolerance& tolerance,
-           cudaStream_t stream) {
+           cudaStream_t stream, const std::vector<double>& extra_abs) {
   Gated g;
   g.candidate = candidate;
   if (!candidate.launch() || cudaGetLastError() != cudaSuccess ||
@@ -108,7 +108,7 @@ Gated gate(const Candidate& candidate, const std::function<bool(std::vector<floa
     g.gate = GateResult::NotRun;
     return g;
   }
-  const ccml_test::ErrorStats stats = ccml_test::compare(got, reference, tolerance);
+  const ccml_test::ErrorStats stats = ccml_test::compare(got, reference, tolerance, extra_abs);
   g.max_abs_err = stats.max_abs_error;
   g.max_rel_err = stats.max_rel_error;
   g.gate = ccml_test::within(stats) ? GateResult::Pass : GateResult::Fail;

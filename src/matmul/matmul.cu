@@ -344,9 +344,16 @@ int splitk_slice(int tiles, int K, int bk) {
   return ((ksteps + slices - 1) / slices) * bk;
 }
 
+template <typename T, int I>
+ccml_status launch_mma_sync_epilogue(T* C, const T* A, const T* B, int M, int N, int K,
+                                     const ccml::kernels::EpilogueArgs& e, cudaStream_t stream);
+
+/* `epi`: null for a plain matmul; otherwise the fused epilogue (entry 8),
+   applied by the reduction kernel (or by MMA_SYNC's store when S = 1). */
 template <typename T, int I, bool kAtomic>
 ccml_status launch_split_k(T* C, const T* A, const T* B, int M, int N, int K,
-                           cudaStream_t stream) {
+                           cudaStream_t stream,
+                           const ccml::kernels::EpilogueArgs* epi = nullptr) {
   if constexpr (std::is_same<T, float>::value) {
     ccml::detail::set_last_error(
         "ccml_matmul: Tensor Core variants take 16-bit input (f16, or bf16 on sm_80+); "
@@ -359,7 +366,10 @@ ccml_status launch_split_k(T* C, const T* A, const T* B, int M, int N, int K,
     const dim3 tiles = ccml::detail::grid_for_2d(N, M, cfg.bn, cfg.bm);
     const int slice = splitk_slice(static_cast<int>(tiles.x * tiles.y), K, cfg.bk);
     const int slices = (K + slice - 1) / slice;
-    if (slices == 1) return launch_mma_sync<T, I>(C, A, B, M, N, K, stream);
+    if (slices == 1) {
+      return epi == nullptr ? launch_mma_sync<T, I>(C, A, B, M, N, K, stream)
+                            : launch_mma_sync_epilogue<T, I>(C, A, B, M, N, K, *epi, stream);
+    }
 
     void (*const splitk_vec)(float*, const T*, const T*, int, int, int, int) =
         &ccml::kernels::matmul_mma_sync_splitk<T, cfg.bm, cfg.bn, cfg.bk, cfg.wm, cfg.wn, true,
@@ -393,13 +403,43 @@ ccml_status launch_split_k(T* C, const T* A, const T* B, int M, int N, int K,
       reduce.block = dim3(256, 1, 1);
       const long long blocks = (count + 255) / 256;
       reduce.grid = dim3(static_cast<unsigned>(blocks < 4096 ? blocks : 4096), 1, 1);
-      CCML_LAUNCH(ccml::kernels::splitk_reduce<T>, reduce, stream, C, W, count,
-                  kAtomic ? 1 : slices);
+      if (epi == nullptr) {
+        CCML_LAUNCH(ccml::kernels::splitk_reduce<T>, reduce, stream, C, W, count,
+                    kAtomic ? 1 : slices);
+      } else {
+        CCML_LAUNCH(ccml::kernels::splitk_reduce_epilogue<T>, reduce, stream, C, W, M, N,
+                    kAtomic ? 1 : slices, *epi);
+      }
       return CCML_SUCCESS;
     }();
     CCML_CUDA_TRY(cudaFreeAsync(workspace, stream));
     return run;
   }
+}
+
+template <typename T, int I>
+ccml_status launch_mma_sync_epilogue(T* C, const T* A, const T* B, int M, int N, int K,
+                                     const ccml::kernels::EpilogueArgs& e, cudaStream_t stream) {
+  constexpr MatmulTcConfig cfg = kMatmulTcConfigs[I];
+  const bool vec = K % 8 == 0 && N % 8 == 0 && aligned(A, 16) && aligned(B, 16) &&
+                   aligned(C, 16);
+  ccml::detail::LaunchConfig config;
+  config.block = dim3((cfg.bm / cfg.wm) * (cfg.bn / cfg.wn) * 32, 1, 1);
+  config.grid = ccml::detail::grid_for_2d(N, M, cfg.bn, cfg.bm);
+  void (*const fused)(T*, const T*, const T*, int, int, int, ccml::kernels::EpilogueArgs) =
+      &ccml::kernels::matmul_mma_sync_epilogue<T, cfg.bm, cfg.bn, cfg.bk, cfg.wm, cfg.wn, true>;
+  void (*const fused_scalar_global)(T*, const T*, const T*, int, int, int,
+                                    ccml::kernels::EpilogueArgs) =
+      &ccml::kernels::matmul_mma_sync_epilogue<T, cfg.bm, cfg.bn, cfg.bk, cfg.wm, cfg.wn, false>;
+  static const int arch = compiled_arch(fused);
+  const ccml_status ok = require_tc<T>(arch, CCML_MATMUL_MMA_SYNC);
+  if (ok != CCML_SUCCESS) return ok;
+  if (vec) {
+    CCML_LAUNCH(fused, config, stream, C, A, B, M, N, K, e);
+  } else {
+    CCML_LAUNCH(fused_scalar_global, config, stream, C, A, B, M, N, K, e);
+  }
+  return CCML_SUCCESS;
 }
 
 /* The configuration each Tensor Core algo enum runs. MMA_SYNC uses 1
@@ -504,6 +544,40 @@ ccml_status matmul(Public* C_pub, const Public* A_pub, const Public* B_pub, int 
   }
 }
 
+/* C = act(A B + bias) + residual (entry 8). MMA_SYNC fuses it into the store,
+   SPLIT_K into the reduction; other algos are NOT_IMPLEMENTED. */
+template <typename Public>
+ccml_status matmul_epilogue(Public* C_pub, const Public* A_pub, const Public* B_pub,
+                            const Public* bias, const Public* residual, int M, int N, int K,
+                            ccml_activation act, ccml_matmul_algo algo, cudaStream_t stream) {
+  using T = ccml::detail::device_t<Public>;
+  ccml::detail::clear_last_error();
+  const ccml_status valid = validate(C_pub, A_pub, B_pub, M, N, K);
+  if (valid != CCML_SUCCESS) return valid;
+  const std::string fn = fn_name("epilogue_") + ccml::detail::dtype_suffix<Public>();
+  CCML_REQUIRE(act == CCML_ACT_NONE || act == CCML_ACT_RELU || act == CCML_ACT_GELU_TANH,
+               CCML_ERROR_INVALID_ARGUMENT, (fn + ": unknown activation").c_str());
+  ccml::kernels::EpilogueArgs e;
+  e.bias = bias;
+  e.residual = residual;
+  e.act = static_cast<int>(act);
+  T* C = ccml::detail::device_ptr(C_pub);
+  const T* A = ccml::detail::device_ptr(A_pub);
+  const T* B = ccml::detail::device_ptr(B_pub);
+  switch (algo) {
+    case CCML_MATMUL_AUTO:
+    case CCML_MATMUL_MMA_SYNC:
+      return launch_mma_sync_epilogue<T, 1>(C, A, B, M, N, K, e, stream);
+    case CCML_MATMUL_SPLIT_K:
+      return M <= 16 ? launch_split_k<T, 2, false>(C, A, B, M, N, K, stream, &e)
+                     : launch_split_k<T, 1, false>(C, A, B, M, N, K, stream, &e);
+    default:
+      ccml::detail::set_last_error(
+          (fn + ": the fused epilogue exists for MMA_SYNC and SPLIT_K only").c_str());
+      return CCML_ERROR_NOT_IMPLEMENTED;
+  }
+}
+
 template <typename Public>
 ccml_status tuned(Public* C, const Public* A, const Public* B, int M, int N, int K,
                   ccml_matmul_algo algo, int index, cudaStream_t stream) {
@@ -595,6 +669,20 @@ ccml_status ccml_matmul_tc_config_get(int index, ccml_matmul_tc_config* out) {
   out->wn = c.wn;
   out->warps = (c.bm / c.wm) * (c.bn / c.wn);
   return CCML_SUCCESS;
+}
+
+ccml_status ccml_matmul_epilogue_f16(ccml_f16* C, const ccml_f16* A, const ccml_f16* B,
+                                     const ccml_f16* bias, const ccml_f16* residual, int M, int N,
+                                     int K, ccml_activation act, ccml_matmul_algo algo,
+                                     cudaStream_t stream) {
+  return matmul_epilogue(C, A, B, bias, residual, M, N, K, act, algo, stream);
+}
+
+ccml_status ccml_matmul_epilogue_bf16(ccml_bf16* C, const ccml_bf16* A, const ccml_bf16* B,
+                                      const ccml_bf16* bias, const ccml_bf16* residual, int M,
+                                      int N, int K, ccml_activation act, ccml_matmul_algo algo,
+                                      cudaStream_t stream) {
+  return matmul_epilogue(C, A, B, bias, residual, M, N, K, act, algo, stream);
 }
 
 ccml_status ccml_matmul_tuned_f32(float* C, const float* A, const float* B, int M, int N,

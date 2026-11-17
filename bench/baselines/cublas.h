@@ -43,6 +43,14 @@ class CublasBaseline {
   bool lt_prepare(int M, int N, int K, BlasType type = BlasType::F32);
   bool lt_matmul(void* C, const void* A, const void* B);
 
+  /* cuBLASLt's own fused epilogue (enhancement B2), for comparison with
+     ccml_matmul_epilogue: C = gelu(A B + bias) (`gelu`, CUBLASLT_EPILOGUE_GELU_BIAS)
+     or C = A B + bias + residual (CUBLASLT_EPILOGUE_BIAS with beta = 1 and the
+     residual as the C operand). bias: [N] device pointer of `type`. Top-1
+     heuristic for that epilogue. */
+  bool lt_prepare_epilogue(int M, int N, int K, BlasType type, const void* bias, bool gelu);
+  bool lt_matmul_epilogue(void* C, const void* A, const void* B, const void* residual);
+
   /* fp64 reference: host float inputs, host double output. */
   bool dgemm_reference(std::vector<double>& C, const std::vector<float>& A,
                        const std::vector<float>& B, int M, int N, int K);
@@ -50,6 +58,7 @@ class CublasBaseline {
  private:
   struct LtPlan;
   void release_lt();
+  bool lt_prepare_impl(int M, int N, int K, BlasType type, int epilogue, const void* bias);
 
   cudaStream_t stream_;
   void*        handle_ = nullptr;    /* cublasHandle_t */

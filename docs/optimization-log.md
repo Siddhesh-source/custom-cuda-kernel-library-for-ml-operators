@@ -949,7 +949,8 @@ per shape is enhancement S4's measured table).
 
 ## 8. Matmul: fused bias / GELU / residual epilogue (enhancements F1, B2; `ccml_matmul_epilogue_<dtype>`)
 
-**Status:** hypothesis committed before the code.
+**Status:** implemented and correct (FP16; BF16 on sm_80+). Local sm_89
+evidence below; T4 pending.
 
 ### Hypothesis
 
@@ -989,3 +990,87 @@ or `BIAS` with beta = 1 and C = residual) (B2).
 epilogue's extra registers (bias, residual loads in the store path) cost
 occupancy, or that the separate kernel's traffic is hidden in L2 at these
 sizes; NCU (DRAM bytes, registers) decides.
+
+### Change
+
+- `EpilogueArgs`, `matmul_mma_sync_epilogue` (epilogue in MMA_SYNC's store
+  functor) and `splitk_reduce_epilogue` in `src/matmul/matmul_kernels.cuh`;
+  `ccml_matmul_epilogue_f16/bf16` and `ccml_activation` in
+  `include/ccml/matmul.h`. GELU is the tanh form (GPT-2's `gelu_new`).
+- Bench: `ccml_bench_matmul_epilogue` (`bench/bench_matmul_epilogue.cpp`),
+  shared dtype traits moved to `bench/support/typed.h`; the separate kernel is
+  `bench/baselines/epilogue.cu`; cuBLASLt's `GELU_BIAS` / `BIAS` (+ beta = 1
+  residual) in `bench/baselines/cublas.cpp`.
+- Tests: new suite `matmul_epilogue` (7 epilogue combinations x 8 shapes x
+  {MMA_SYNC, SPLIT_K} x {FP16, BF16}, misaligned views, argument checks;
+  NaN-poisoned outputs), worst normalized error 0.49 (FP16), 0.50 (BF16).
+
+**Correction during the step: the gate for unfused pipelines.** The first run
+failed every "+separate" candidate, ours included. Not a bug: an unfused 16-bit
+pipeline rounds A B to FP16 before the epilogue kernel, one extra rounding of
+up to unit x |A B|, which the fused tolerance does not admit where the residual
+cancels the product. That rounding is inherent to any unfused 16-bit linear
+layer, so unfused candidates are now gated with that per-element allowance
+(`ccml_test::compare(..., extra_abs)`, unit-tested in `harness`); ccml's fused
+kernels keep the strict bound. **cuBLASLt's fused epilogue showed exactly the
+unfused error** (0.0936 vs the fused kernels' 0.0625 on gpt2s ffn_up
+512x3072x768): it evidently rounds before its epilogue, so it gets the same
+allowance. cuBLAS GemmEx + separate still fails on 8 of 20 shapes with errors
+beyond even that (0.106-0.171), the same accuracy loss as entry 6.
+
+### Evidence
+
+**Timings, local sm_89 (indicative), FP16, warm L2, median of 200,
+interleaved per shape, 2535-2565 MHz unless noted** (`results/sm_89/epilogue_*.csv`):
+
+| Shape, epilogue | **ccml fused** (best of MMA_SYNC / SPLIT_K) | ccml + separate | cuBLAS + separate | cuBLASLt epilogue |
+|---|---|---|---|---|
+| gpt2s ffn_up 2048x3072x768, bias+GELU | **606.7 us** | 755.2 (1.24x) | 749.6 (1.24x) | FAIL |
+| gpt2s ffn_up 512x3072x768 | **159.9** | 192.5 (1.20x) | 184.9 (1.16x) | 160.8 (1.01x) |
+| gpt2s ffn_up 16x3072x768 (2205-2565 MHz) | **16.4** | 17.4 (1.06x) | 21.5 (1.31x) | 26.6 (1.62x) |
+| gpt2s ffn_up 1x3072x768 (2205 MHz) | **15.4** | 16.4 (1.06x) | 29.7 (1.93x) | 36.9 (2.40x) |
+| gpt2s attn_out 2048x768x768, bias+residual | 162.8 | 190.5 (1.17x) | 182.3 (1.12x) | **146.4 (0.90x)** |
+| gpt2s attn_out 128x768x768 | 18.6 | 21.5 (1.16x) | 19.5 (1.05x) | **15.4 (0.83x)** |
+| gpt2s attn_out 16x768x768 | **9.2** | 11.3 (1.23x) | 10.2 (1.11x) | FAIL |
+| gpt2s attn_out 1x768x768 | 9.2 | 10.2 (1.11x) | 10.2 (1.11x) | **8.2 (0.89x)** |
+| gpt2s ffn_down 2048x768x3072 | 596.0 | 645.1 (1.08x) | 605.2 (1.02x) | **554.0 (0.93x)** |
+| gpt2s ffn_down 128x768x3072 | 50.2 | 57.3 (1.14x) | **48.3 (0.96x)** | **45.1 (0.90x)** |
+| gpt2s ffn_down 16x768x3072 | **15.4** | 16.4 (1.06x) | FAIL | FAIL |
+| gpt2s ffn_down 1x768x3072 | **14.3** | 16.4 (1.15x) | 34.8 (2.43x) | FAIL |
+| llama1b attn_out 2048x2048x2048 | 1038 | 1249 (1.20x) | 1157 (1.11x) | **999 (0.96x)** |
+| llama1b attn_out 16x2048x2048 | **20.5** | 22.5 (1.10x) | 33.8 (1.65x) | FAIL |
+| llama1b attn_out 1x2048x2048 | **19.5** | 20.6 (1.06x) | 71.7 (3.68x) | FAIL |
+
+(ratios are the competitor's time over ccml fused: above 1 is a ccml win.
+All 20 shapes are in the CSVs; M = 128 and 512 rows not shown follow the same
+pattern.)
+
+**Nsight Compute, local sm_89** (`profiles/sm_89/matmul/fused_vs_unfused_*`,
+the fused MMA_SYNC kernel against the plain one it replaces):
+
+| Metric (gpt2s ffn_up 2048x3072x768 / attn_out 2048x768x768) | plain matmul kernel | fused kernel |
+|---|---|---|
+| Duration under the profiler | 685 / 174 us | 715 / 190 us (+4% / +9%) |
+| Registers per thread | 114 | 114 (no occupancy cost) |
+| Stall long_scoreboard (per issue) | 0.87 / 0.49 | 1.36 / 4.66 (bias and residual loads in the store) |
+
+### Verdict
+
+**Kept.**
+
+1. Fused vs our unfused: **met for M >= 512** with K = 768-2048: 1.17-1.24x
+   (K = 3072 FFN-down: 1.08x, as the 1/K argument predicts). **Decode:
+   1.06-1.23x, below the predicted 1.2-1.6x**: the separate kernel on 16 x N
+   elements costs only ~1-2 us here, less than I assumed.
+2. Fused ccml vs cuBLAS + separate: **met**: ccml wins on every shape where
+   both pass the gate except gpt2s ffn_down 128x768x3072 (0.96x), by 1.02-1.24x
+   at M >= 512 and up to 3.7x at decode sizes (split-K's advantage plus the
+   fusion).
+3. Against cuBLASLt's fused epilogue: **met**: Lt is faster at M = 128 and
+   M = 2048 on the residual shapes (0.83-0.96x for ccml), tied on ffn_up
+   512, and ccml wins only at decode sizes (1.6-2.4x on ffn_up). Lt fails the
+   gate on 11 of 20 shapes even with the unfused allowance.
+
+The fused kernel itself is 4-9% slower than the plain one (the epilogue's
+loads stall the store path), so fusion wins by removing a whole kernel, not by
+being free.

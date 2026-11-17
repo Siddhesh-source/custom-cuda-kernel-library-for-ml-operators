@@ -66,7 +66,7 @@ Gated gate(const Candidate& candidate, const float* output, std::size_t count,
    and returns false if it could not. */
 Gated gate(const Candidate& candidate, const std::function<bool(std::vector<float>&)>& fetch,
            const std::vector<double>& reference, const ccml_test::Tolerance& tolerance,
-           cudaStream_t stream);
+           cudaStream_t stream, const std::vector<double>& extra_abs = {});
 
 /* Writes all rows of one shape: every gated candidate, for each requested
    cache mode, timing only those that passed. */
