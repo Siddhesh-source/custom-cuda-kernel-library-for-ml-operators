@@ -1380,3 +1380,41 @@ longer than 1-16 blocks of 8 warps sharing the row. AUTO must keep small row
 counts on WELFORD. The next limit, from NCU: 80 registers halve occupancy and
 `long_scoreboard` dominates; 128-bit loads (entry 11) cut the load count 4x
 (FP32) / 8x (16-bit).
+
+---
+
+## 11. Layernorm: 128-bit loads and stores on warp-per-row (`CCML_LAYERNORM_VECTORIZED`)
+
+**Status:** hypothesis committed before the code.
+
+### Hypothesis
+
+Entry 10's profile names the limiter: WARP_PER_ROW holds up to 32 values per
+lane in 80 registers, so only 48% of warps are active, and the top stall is
+`long_scoreboard` (24.7 per issue at 8192 x 768): each lane issues up to 32
+separate 32-bit (or 16-bit) loads per row and waits on them with half the
+usual number of warps around to hide it. FP16 makes it worse: a 16-bit load
+moves half the bytes per instruction.
+
+**Change:** `CCML_LAYERNORM_VECTORIZED`: WARP_PER_ROW with every global
+access 128 bits wide: x, gamma and beta loaded and y stored as chunks of
+16 / sizeof(T) elements (4 FP32, 8 FP16/BF16); lane l owns chunks
+l, l + 32, ... Same register-resident two-pass statistics. It applies when
+cols is a multiple of the chunk and every pointer is 16-byte aligned; otherwise
+the call runs WARP_PER_ROW's scalar kernel (the result is identical, so the
+fallback is safe).
+
+**Predictions** (warm L2; T4 official, sm_89 NCU):
+
+1. Global load instructions per row fall **4x (FP32) / 8x (FP16, BF16)**, and
+   `long_scoreboard` per issue falls by at least half.
+2. FP16/BF16, rows >= 2048: **1.2-1.6x faster than WARP_PER_ROW**, reaching
+   the DRAM peak where WARP_PER_ROW does not.
+3. FP32 shapes already at the DRAM peak (sm_89 rows = 8192): **no change**
+   (+-5%); mid sizes (L2-resident): 1.1-1.3x.
+4. Correctness unchanged, including the scalar fallback (misaligned views,
+   widths not a multiple of the chunk).
+
+**What would falsify it:** load instructions falling as predicted with no
+time saved at the 16-bit large shapes, which would mean WARP_PER_ROW's 16-bit
+rows were not latency-bound but limited elsewhere (occupancy via registers).
