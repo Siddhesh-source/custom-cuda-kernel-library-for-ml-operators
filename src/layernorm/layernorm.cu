@@ -28,8 +28,15 @@ ccml_status validate(const Public* y, const Public* x, int rows, int cols, float
   return CCML_SUCCESS;
 }
 
-ccml_layernorm_algo resolve(ccml_layernorm_algo algo) {
-  return (algo == CCML_LAYERNORM_AUTO) ? CCML_LAYERNORM_TWO_PASS : algo;
+/* AUTO (enhancement S4), from the Kaggle T4 run at commit 29e38c6
+   (results/sm_75/layernorm_variants/, docs/results/phase-12-layernorm.md):
+   the best variant per column bucket, identical in FP32, FP16 and BF16, was
+   WARP_PER_ROW for cols <= 256, VECTORIZED for 257-1024 (14 of 14 shapes)
+   and WELFORD above 1024 (18 of 18). */
+ccml_layernorm_algo resolve(ccml_layernorm_algo algo, int cols) {
+  if (algo != CCML_LAYERNORM_AUTO) return algo;
+  if (cols <= 256) return CCML_LAYERNORM_WARP_PER_ROW;
+  return cols <= 1024 ? CCML_LAYERNORM_VECTORIZED : CCML_LAYERNORM_WELFORD;
 }
 
 /* Warp per row (entry 10): the per-lane register count is the smallest bucket
@@ -119,7 +126,7 @@ ccml_status layernorm(Public* y_pub, const Public* x_pub, const Public* gamma_pu
   const T* gamma = ccml::detail::device_ptr(gamma_pub);
   const T* beta = ccml::detail::device_ptr(beta_pub);
 
-  switch (resolve(algo)) {
+  switch (resolve(algo, cols)) {
     case CCML_LAYERNORM_TWO_PASS: {
       /* One block per row. A row count above the device's grid limit is caught
          by validate_launch inside CCML_LAUNCH and reported as such, rather than
@@ -203,6 +210,8 @@ ccml_status layernorm_residual(Public* y_pub, Public* s_pub, const Public* x_pub
   const T* b = ccml::detail::device_ptr(b_pub);
   const T* g = ccml::detail::device_ptr(g_pub);
   const T* be = ccml::detail::device_ptr(be_pub);
+  /* Confirmed on the T4 (commit 29e38c6): fused VECTORIZED 1.19-2.54x faster
+     than fused WELFORD on 16-bit rows of 257-1024 columns, equal elsewhere. */
   if (algo == CCML_LAYERNORM_AUTO) {
     algo = cols <= 1024 ? CCML_LAYERNORM_VECTORIZED : CCML_LAYERNORM_WELFORD;
   }
