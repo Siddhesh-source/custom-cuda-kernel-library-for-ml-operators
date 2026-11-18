@@ -217,8 +217,9 @@ class Candidate:
     impl: str
     algo: str
     fn: Callable[[], object]
-    # The fp64 reference of the contract this candidate implements, when it
-    # differs from the shape's default one (None: use the default).
+    # The fp64 references of the contracts this candidate may implement (it
+    # passes against any one), when they differ from the shape's default one
+    # (None: use the default).
     ref: object = None
 
 

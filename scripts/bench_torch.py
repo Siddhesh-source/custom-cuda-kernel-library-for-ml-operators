@@ -106,10 +106,11 @@ def setup(op: str, shape: dict, impls: list[str], mode: str, dtype: str = "f32")
         x, r, bvec, w, bias = (t.to(TORCH_DTYPE[dtype]) for t in (x, r, bvec, w, bias))
         s = x + r + bvec
         ref = F.layer_norm(s.double(), (cols,), w.double(), bias.double(), EPS)
-        # torch.compile (Inductor) fuses the add and keeps the sum in FP32, so
-        # its contract is LN of the EXACT sum, not of the sum rounded to the
-        # storage type; it is judged against that (first T4 run: 60 FP16 rows
-        # failed the rounded-sum reference by one rounding of s).
+        # torch.compile (Inductor) fuses the add; whether it rounds the sum to
+        # the storage type depends on the dtype (T4 runs: FP16 kept FP32 and
+        # failed the rounded-sum reference on 60 rows; BF16 rounded and failed
+        # the exact-sum one on 60). Both are valid implementations of
+        # LN(x + r + b), so it passes against either.
         exact = F.layer_norm(x.double() + r.double() + bvec.double(), (cols,), w.double(),
                              bias.double(), EPS)
         tol = bl.widen_for_storage(bl.tolerance_reduction(cols), dtype)
@@ -122,7 +123,7 @@ def setup(op: str, shape: dict, impls: list[str], mode: str, dtype: str = "f32")
             cf = compiled(lambda a, rr, bb, ww, be: F.layer_norm(a + rr + bb, (cols,), ww, be,
                                                                  EPS), mode)
             cands.append(bl.Candidate("torch_compile", mode, lambda: cf(x, r, bvec, w, bias),
-                                      ref=exact))
+                                      ref=(ref, exact)))
         nbytes = float(4 * rows * cols + 3 * cols) * ELEM_BYTES[dtype]
         return ref, tol, 0.0, nbytes, cands
 
@@ -221,8 +222,12 @@ def main() -> int:
                 gated = []
                 for c in cands:
                     try:
-                        ok, mabs, mrel = bl.compare(c.fn(), ref if c.ref is None else c.ref,
-                                                    *tol)
+                        out = c.fn()
+                        refs = [ref] if c.ref is None else list(c.ref)
+                        # Pass against any of the candidate's valid contracts;
+                        # report the errors of the closest one.
+                        res = [bl.compare(out, r, *tol) for r in refs]
+                        ok, mabs, mrel = max(res, key=lambda t: (t[0], -t[1]))
                         torch.cuda.synchronize()
                         gated.append((c, "PASS" if ok else "FAIL", mabs, mrel))
                     except Exception as e:  # noqa: BLE001
