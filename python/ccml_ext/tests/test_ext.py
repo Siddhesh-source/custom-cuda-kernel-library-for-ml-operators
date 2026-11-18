@@ -11,6 +11,7 @@ CCML_BUILD_DIR). BF16 Tensor Core ops SKIP below sm_80, never PASS.
 
 from __future__ import annotations
 
+import copy
 import math
 import pathlib
 import sys
@@ -213,7 +214,9 @@ def test_patch_model_on_a_small_gpt2():
                                   vocab_size=1000)
     torch.manual_seed(0)
     stock = transformers.GPT2LMHeadModel(cfg).to("cuda", torch.float16).eval()
-    patched = transformers.GPT2LMHeadModel(cfg).to("cuda", torch.float16).eval()
+    # Its own config: set_attn_implementation writes to the config, and a shared
+    # one would switch the stock model to ccml attention too (T4 run 345984b).
+    patched = transformers.GPT2LMHeadModel(copy.deepcopy(cfg)).to("cuda", torch.float16).eval()
     patched.load_state_dict(stock.state_dict())
     report = ccml_ext.patch_model(patched)
     assert report["layernorm"] == 5 and report["linear"] + report["linear_gelu"] == 8

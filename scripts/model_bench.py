@@ -12,11 +12,18 @@ Parity (C4), written to model_parity.json:
     non-overlapping 512-token windows of the first --eval-tokens tokens).
 Latency, written to model_latency.csv (scripts/benchlib.py schema and method:
 CUDA events, warmup 20, >= 100 iterations, interleaved, median and spread):
-  {eager, compile, cudagraph} x {stock, +ccml (every swap), +ccml-nolinear
-  (norms and attention softmax only; cuBLAS linears)}
+  {eager, compile, cudagraph} x {stock (transformers' default attention,
+  recorded: SDPA, a fused attention kernel), stock-eager-attn (transformers'
+  unfused eager attention: the same matmul, softmax, matmul structure as
+  ccml's), +ccml (every swap), +ccml-nolinear (norms and attention softmax
+  only; cuBLAS linears)}
   for every (batch, seq): one forward pass, logits out, no KV cache. The
   no-linear variant attributes the end-to-end time between ccml's matmul and
   its row-wise kernels.
+Dispatch cost, written to model_dispatch.csv: each ccml op and its ATen
+counterpart on decode-sized inputs, 50 calls per timed iteration between CUDA
+events (per call = median / 50); at these sizes the time is launch and
+dispatch bound, so it measures the binding, not the kernel.
 Every candidate is gated before it is timed: its logits must be within
 max(2 x stock FP16's own error, 1e-2 x logit scale) of the FP32 model on the
 same input (reference.md section 11: never time what fails its check).
@@ -127,6 +134,15 @@ def main() -> int:
     report = ccml_ext.patch_model(ccml_model)
     nolin = copy.deepcopy(stock)
     report_nolin = ccml_ext.patch_model(nolin, linear=False)
+    stock_eager_attn = copy.deepcopy(stock)
+    if hasattr(stock_eager_attn, "set_attn_implementation"):
+        stock_eager_attn.set_attn_implementation("eager")
+    else:
+        stock_eager_attn.config._attn_implementation = "eager"
+    attn_impls = {name: getattr(m.config, "_attn_implementation", "unknown")
+                  for name, m in (("stock", stock), ("stock_eager_attn", stock_eager_attn),
+                                  ("ccml", ccml_model), ("ccml_nolinear", nolin))}
+    log(f"attention implementations: {attn_impls}")
     log(f"patched: {report}; no-linear: {report_nolin}")
 
     # ------------------------------------------------------------ parity --
@@ -140,6 +156,7 @@ def main() -> int:
         attention_calls = ccml_ext.modules.ATTENTION_CALLS
         unfused_mask_calls = ccml_ext.modules.UNFUSED_MASK_CALLS
         l_nolin = nolin(first, use_cache=False).logits.float()
+        l_eager_attn = stock_eager_attn(first, use_cache=False).logits.float()
         l_stock = stock(first, use_cache=False).logits.float()
     parity = {
         "model": a.model,
@@ -147,12 +164,17 @@ def main() -> int:
         "eval_tokens": int(ids.numel()),
         "patch_report": report,
         "patch_report_nolinear": report_nolin,
+        "attention_implementations": attn_impls,
         "ccml_attention_calls_in_one_forward": attention_calls,
         "of_which_mask_applied_in_pytorch": unfused_mask_calls,
         "logits_max_abs_err_stock_fp16_vs_fp32": (l_stock - l32).abs().max().item(),
         "logits_max_abs_err_ccml_fp16_vs_fp32": (l_ccml - l32).abs().max().item(),
         "logits_max_abs_diff_ccml_vs_stock_fp16": (l_ccml - l_stock).abs().max().item(),
         "logits_max_abs_err_ccml_nolinear_fp16_vs_fp32": (l_nolin - l32).abs().max().item(),
+        # Eager attention rounds the scores to FP16 before the softmax, as
+        # ccml's does; SDPA (the default) does not.
+        "logits_max_abs_err_stock_eager_attn_fp16_vs_fp32":
+            (l_eager_attn - l32).abs().max().item(),
         "logits_scale_max_abs_fp32": l32.abs().max().item(),
         "top1_agreement_ccml_vs_fp32": (l_ccml.argmax(-1) == l32.argmax(-1)).float().mean().item(),
         "top1_agreement_stock_vs_fp32": (l_stock.argmax(-1) == l32.argmax(-1)).float().mean().item(),
@@ -160,6 +182,7 @@ def main() -> int:
         "perplexity_stock_fp16": perplexity(stock, ids),
         "perplexity_ccml_fp16": perplexity(ccml_model, ids),
         "perplexity_ccml_nolinear_fp16": perplexity(nolin, ids),
+        "perplexity_stock_eager_attn_fp16": perplexity(stock_eager_attn, ids),
     }
     parity["perplexity_delta_ccml_vs_stock_pct"] = 100.0 * (
         parity["perplexity_ccml_fp16"] / parity["perplexity_stock_fp16"] - 1.0)
@@ -207,23 +230,25 @@ def main() -> int:
                             return f()
                     return run
 
-                models = (("", stock), ("+ccml", ccml_model), ("+ccml-nolinear", nolin))
+                models = (("", stock), ("[eager-attn]", stock_eager_attn), ("+ccml", ccml_model),
+                          ("+ccml-nolinear", nolin))
+                stocks = (stock, stock_eager_attn)
                 for suffix, m in models:
-                    cands.append(bl.Candidate("pytorch_eager" if m is stock else "ccml",
+                    cands.append(bl.Candidate("pytorch_eager" if m in stocks else "ccml",
                                               "eager" + suffix,
                                               nograd(lambda m=m: m(x, use_cache=False).logits)))
                 for suffix, m in models:
                     name = "compile" + suffix
                     try:
                         cm = torch.compile(m)
-                        cands.append(bl.Candidate("torch_compile" if m is stock else "ccml", name,
+                        cands.append(bl.Candidate("torch_compile" if m in stocks else "ccml", name,
                                                   nograd(lambda cm=cm: cm(x, use_cache=False).logits)))
                     except Exception as e:  # noqa: BLE001
                         notes[name] = f"{type(e).__name__}: {e}"
                 for suffix, m in models:
                     name = "cudagraph" + suffix
                     try:
-                        cands.append(bl.Candidate("cuda_graph" if m is stock else "ccml", name,
+                        cands.append(bl.Candidate("cuda_graph" if m in stocks else "ccml", name,
                                                   graph_forward(m, x)))
                     except Exception as e:  # noqa: BLE001
                         notes[name] = f"{type(e).__name__}: {e}"
@@ -256,7 +281,82 @@ def main() -> int:
                 out.flush()
                 log(f"done b{b} s{s} ({time.time() - t0:.1f}s)")
     log(f"wrote {path}")
+    dispatch_cost(out_dir, tel, ctx, ccml_ext)
     return 0
+
+
+def dispatch_cost(out_dir: pathlib.Path, tel, ctx, ccml_ext) -> None:
+    """Per-call cost of each ccml op and its ATen counterpart at decode sizes
+    (GPT-2 small, one token), where launch and dispatch dominate."""
+    import torch.nn.functional as F
+    from ccml_ext import ops
+
+    calls = 50
+    h = torch.float16
+    g = torch.Generator(device="cuda").manual_seed(7)
+    x = torch.randn(1, 768, device="cuda", generator=g).to(h)
+    w = torch.randn(768, device="cuda", generator=g).to(h)
+    b = torch.randn(768, device="cuda", generator=g).to(h)
+    wk = (torch.randn(768, 3072, device="cuda", generator=g) * 0.03).to(h)
+    bk = torch.randn(3072, device="cuda", generator=g).to(h)
+    wt = wk.t().contiguous()
+    s = torch.randn(12, 1, 128, device="cuda", generator=g).to(h)
+
+    def loop(f):
+        def run():
+            with torch.no_grad():
+                for _ in range(calls):
+                    f()
+        return run
+
+    pairs = {
+        "layernorm": (lambda: ops.layernorm(x, w, b, 1e-5),
+                      lambda: F.layer_norm(x, (768,), w, b, 1e-5)),
+        "softmax_masked": (lambda: ops.softmax_masked(s, None, 0.125, 1),
+                           lambda: torch.softmax(s * 0.125, dim=-1)),
+        "linear_gelu": (lambda: ops.linear(x, wk, bk, None, ops.ACT_GELU_TANH),
+                        lambda: F.gelu(F.linear(x, wt, bk), approximate="tanh")),
+    }
+    # fp64 references at the tolerances of python/ccml_ext/tests/test_ext.py:
+    # every row is gated before it is timed. (causal_q = 1 with 128 keys masks
+    # nothing: bottom-right alignment lets the one query see every key.)
+    prod = x.double() @ wk.double()
+    abs_t, rel_t = bl.tolerance_dot(768, prod.pow(2).mean().sqrt().item())
+    refs = {
+        "layernorm": (F.layer_norm(x.double(), (768,), w.double(), b.double(), 1e-5),
+                      bl.widen_for_storage(bl.tolerance_reduction(768), "f16")),
+        "softmax_masked": (torch.softmax(s.double() * 0.125, dim=-1),
+                           bl.widen_for_storage(bl.tolerance_softmax(128), "f16")),
+        "linear_gelu": (F.gelu(prod + bk.double(), approximate="tanh"),
+                        bl.widen_for_storage((2 * abs_t, rel_t), "f16")),
+    }
+    path = out_dir / "model_dispatch.csv"
+    with open(path, "w", encoding="utf-8") as out:
+        out.write(f"# per-call cost = median_us / {calls}; decode-sized inputs (1 x 768 "
+                  f"fp16, 12 x 1 x 128 scores, 1 x 768 x 3072 linear); commit "
+                  f"{ctx['commit']}\n")
+        out.write(bl.CSV_HEADER + "\n")
+        for name, (ours, theirs) in pairs.items():
+            ref, tol = refs[name]
+            gated = []
+            for impl, f in (("ccml", ours), ("pytorch_eager", theirs)):
+                with torch.no_grad():
+                    ok, mabs, mrel = bl.compare(f(), ref, *tol)
+                gated.append((bl.Candidate(impl, f"{name} x{calls}", loop(f)),
+                              "PASS" if ok else "FAIL", mabs, mrel))
+            passing = [c for c, gate, _, _ in gated if gate == "PASS"]
+            measured = iter(bl.time_interleaved(passing, False, None, tel=tel) if passing else [])
+            for c, gate, mabs, mrel in gated:
+                m = next(measured) if gate == "PASS" else None
+                out.write(bl.csv_row(op="dispatch", impl=c.impl, algo=c.algo, dtype="f16",
+                                     shape={"tag": name, "rows": 1, "cols": 768}, cold=False,
+                                     gate=gate, max_abs=mabs, max_rel=mrel, flops=0.0,
+                                     nbytes=0.0, measured=m,
+                                     tel=(m.telemetry if m and m.telemetry else tel.sample()),
+                                     ctx=ctx) + "\n")
+                if m is not None:
+                    log(f"dispatch {name} {c.impl}: {m.summary.median / calls:.2f} us/call")
+    log(f"wrote {path}")
 
 
 if __name__ == "__main__":
