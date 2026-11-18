@@ -219,14 +219,48 @@ def test_patch_model_on_a_small_gpt2():
     assert report["layernorm"] == 5 and report["linear"] + report["linear_gelu"] == 8
     ids = torch.randint(0, 1000, (2, 96), device="cuda")
     ccml_ext.modules.ATTENTION_CALLS = 0
+    ccml_ext.modules.UNFUSED_MASK_CALLS = 0
     with torch.no_grad():
-        ref = stock(ids).logits.float()
-        got = patched(ids).logits.float()
+        ref = stock(ids, use_cache=False).logits.float()
+        got = patched(ids, use_cache=False).logits.float()
     if report["attention"]:
-        assert ccml_ext.modules.ATTENTION_CALLS > 0, "attention was registered but never ran"
+        assert ccml_ext.modules.ATTENTION_CALLS == 2, "one call per layer expected"
+        # No padding: the causal mask must be applied inside the fused kernel.
+        assert ccml_ext.modules.UNFUSED_MASK_CALLS == 0, "causal mask was materialized"
     err = (got - ref).abs().max().item()
     scale = ref.abs().max().item()
     # FP16 end to end, different summation orders: bounded by a few FP16 ulps
     # of the logit scale; the full-size parity with real weights is
     # scripts/model_bench.py.
     assert err <= 2e-2 * max(scale, 1.0), f"logits differ by {err} (scale {scale})"
+
+
+def _small_gpt2(transformers):
+    cfg = transformers.GPT2Config(n_layer=2, n_embd=128, n_head=4, n_positions=256,
+                                  vocab_size=1000)
+    torch.manual_seed(0)
+    return transformers.GPT2LMHeadModel(cfg).to("cuda", torch.float16).eval()
+
+
+def test_patch_model_without_linears():
+    transformers = pytest.importorskip("transformers")
+    m = _small_gpt2(transformers)
+    report = ccml_ext.patch_model(m, linear=False)
+    assert report["layernorm"] == 5 and report["linear"] == 0 and report["linear_gelu"] == 0
+    assert not any(isinstance(x, ccml_ext.CcmlLinear) for x in m.modules())
+
+
+def test_compiled_patched_model_does_not_recompile():
+    transformers = pytest.importorskip("transformers")
+    m = _small_gpt2(transformers)
+    ccml_ext.patch_model(m)
+    ids = torch.randint(0, 1000, (2, 64), device="cuda")
+    torch._dynamo.reset()
+    cm = torch.compile(m)
+    with torch.no_grad():
+        first = cm(ids, use_cache=False).logits
+        # A guard on module state (e.g. a mutated global) would recompile here.
+        with torch._dynamo.config.patch(error_on_recompile=True):
+            for _ in range(3):
+                again = cm(ids, use_cache=False).logits
+    assert torch.equal(first, again)

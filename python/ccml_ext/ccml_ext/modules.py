@@ -33,7 +33,8 @@ from . import ops
 
 #: How many times the ccml attention function ran (patch_model reports and the
 #: model benchmark checks it, so a patch that silently did not apply is caught).
-ATTENTION_CALLS = 0
+ATTENTION_CALLS = 0      # ccml_attention calls (eager only: not counted while tracing)
+UNFUSED_MASK_CALLS = 0   # of those, calls that applied an explicit mask in PyTorch
 
 
 class CcmlLinear(nn.Module):
@@ -106,8 +107,13 @@ def ccml_attention(module, query, key, value, attention_mask, head_mask=None, **
     """GPT-2 attention with the ccml softmax: same contract as transformers'
     gpt2.eager_attention_forward (query/key/value [b, h, q|k, d]; returns
     (output [b, q, h, d], None))."""
-    global ATTENTION_CALLS
-    ATTENTION_CALLS += 1
+    global ATTENTION_CALLS, UNFUSED_MASK_CALLS
+    # A global mutated under torch.compile becomes a guard and forces a
+    # recompile on every call (first T4 run: recompile limit hit, compiled
+    # model fell back to eager), so count only outside tracing.
+    counting = not torch.compiler.is_compiling()
+    if counting:
+        ATTENTION_CALLS += 1
     q_len, k_len, d = query.shape[-2], key.shape[-2], value.shape[-1]
     scale = 1.0
     if getattr(module, "scale_attn_weights", True):
@@ -118,6 +124,8 @@ def ccml_attention(module, query, key, value, attention_mask, head_mask=None, **
     if attention_mask is not None:
         # An explicit (additive) mask from transformers: applied by PyTorch, the
         # causal mask (always valid for GPT-2 self-attention) fused in ccml.
+        if counting:
+            UNFUSED_MASK_CALLS += 1
         mask = attention_mask[:, :, :, :k_len]
         if mask.dtype == torch.bool:  # True = attend
             mask = torch.zeros_like(mask, dtype=scores.dtype).masked_fill(~mask, float("-inf"))
@@ -142,23 +150,30 @@ def _register_attention() -> bool:
         return False
     AttentionInterface.register("ccml", ccml_attention)
     try:  # the mask builder for custom implementations (newer transformers)
-        from transformers.masking_utils import AttentionMaskInterface, eager_mask
+        from transformers.masking_utils import AttentionMaskInterface, sdpa_mask
 
-        AttentionMaskInterface.register("ccml", eager_mask)
+        # sdpa_mask returns None when the mask is purely causal (no padding),
+        # so the causal mask is applied inside the fused ccml kernel; with
+        # padding it returns a bool mask, applied in PyTorch above. (eager_mask
+        # always materializes it: the first T4 run never used the fused path.)
+        AttentionMaskInterface.register("ccml", sdpa_mask)
     except ImportError:
         pass
     return True
 
 
-def patch_model(model: nn.Module, attention: bool = True) -> dict:
+def patch_model(model: nn.Module, attention: bool = True, linear: bool = True) -> dict:
     """Swap GPT-2's layers for ccml ones in place. Returns a report of what was
-    replaced (counts, and whether attention was registered)."""
+    replaced (counts, and whether attention was registered). linear=False
+    keeps PyTorch's (cuBLAS) linears, to attribute end-to-end time per op."""
     transformer = getattr(model, "transformer", model)
     report = {"layernorm": 0, "linear": 0, "linear_gelu": 0, "attention": False}
     for block in transformer.h:
         block.ln_1 = CcmlLayerNorm.from_layernorm(block.ln_1)
         block.ln_2 = CcmlLayerNorm.from_layernorm(block.ln_2)
         report["layernorm"] += 2
+        if not linear:
+            continue
         block.attn.c_attn = CcmlLinear.from_conv1d(block.attn.c_attn)
         block.attn.c_proj = CcmlLinear.from_conv1d(block.attn.c_proj)
         block.mlp.c_proj = CcmlLinear.from_conv1d(block.mlp.c_proj)

@@ -12,8 +12,11 @@ Parity (C4), written to model_parity.json:
     non-overlapping 512-token windows of the first --eval-tokens tokens).
 Latency, written to model_latency.csv (scripts/benchlib.py schema and method:
 CUDA events, warmup 20, >= 100 iterations, interleaved, median and spread):
-  eager | eager+ccml | compile | compile+ccml | cudagraph | cudagraph+ccml
-  for every (batch, seq): one forward pass, logits out, no KV cache.
+  {eager, compile, cudagraph} x {stock, +ccml (every swap), +ccml-nolinear
+  (norms and attention softmax only; cuBLAS linears)}
+  for every (batch, seq): one forward pass, logits out, no KV cache. The
+  no-linear variant attributes the end-to-end time between ccml's matmul and
+  its row-wise kernels.
 Every candidate is gated before it is timed: its logits must be within
 max(2 x stock FP16's own error, 1e-2 x logit scale) of the FP32 model on the
 same input (reference.md section 11: never time what fails its check).
@@ -122,7 +125,9 @@ def main() -> int:
     stock = copy.deepcopy(ref32).half().eval()
     ccml_model = copy.deepcopy(stock)
     report = ccml_ext.patch_model(ccml_model)
-    log(f"patched: {report}")
+    nolin = copy.deepcopy(stock)
+    report_nolin = ccml_ext.patch_model(nolin, linear=False)
+    log(f"patched: {report}; no-linear: {report_nolin}")
 
     # ------------------------------------------------------------ parity --
     ids, source = eval_ids(tok, a.eval_tokens)
@@ -130,24 +135,31 @@ def main() -> int:
         first = ids[:512].to("cuda")[None]
         l32 = ref32(first, use_cache=False).logits.float()
         ccml_ext.modules.ATTENTION_CALLS = 0
+        ccml_ext.modules.UNFUSED_MASK_CALLS = 0
         l_ccml = ccml_model(first, use_cache=False).logits.float()
         attention_calls = ccml_ext.modules.ATTENTION_CALLS
+        unfused_mask_calls = ccml_ext.modules.UNFUSED_MASK_CALLS
+        l_nolin = nolin(first, use_cache=False).logits.float()
         l_stock = stock(first, use_cache=False).logits.float()
     parity = {
         "model": a.model,
         "eval_source": source,
         "eval_tokens": int(ids.numel()),
         "patch_report": report,
+        "patch_report_nolinear": report_nolin,
         "ccml_attention_calls_in_one_forward": attention_calls,
+        "of_which_mask_applied_in_pytorch": unfused_mask_calls,
         "logits_max_abs_err_stock_fp16_vs_fp32": (l_stock - l32).abs().max().item(),
         "logits_max_abs_err_ccml_fp16_vs_fp32": (l_ccml - l32).abs().max().item(),
         "logits_max_abs_diff_ccml_vs_stock_fp16": (l_ccml - l_stock).abs().max().item(),
+        "logits_max_abs_err_ccml_nolinear_fp16_vs_fp32": (l_nolin - l32).abs().max().item(),
         "logits_scale_max_abs_fp32": l32.abs().max().item(),
         "top1_agreement_ccml_vs_fp32": (l_ccml.argmax(-1) == l32.argmax(-1)).float().mean().item(),
         "top1_agreement_stock_vs_fp32": (l_stock.argmax(-1) == l32.argmax(-1)).float().mean().item(),
         "perplexity_fp32": perplexity(ref32, ids),
         "perplexity_stock_fp16": perplexity(stock, ids),
         "perplexity_ccml_fp16": perplexity(ccml_model, ids),
+        "perplexity_ccml_nolinear_fp16": perplexity(nolin, ids),
     }
     parity["perplexity_delta_ccml_vs_stock_pct"] = 100.0 * (
         parity["perplexity_ccml_fp16"] / parity["perplexity_stock_fp16"] - 1.0)
@@ -175,7 +187,7 @@ def main() -> int:
                   f"torch: {torch.__version__}  transformers: {transformers.__version__}  "
                   f"commit: {ctx['commit']}\n")
         out.write(f"# model: {a.model} fp16, one forward pass (logits), no KV cache; "
-                  f"patch: {report}\n")
+                  f"patch: {report}; nolinear patch: {report_nolin}\n")
         out.write(bl.CSV_HEADER + "\n")
         for b in (int(v) for v in a.batches.split(",")):
             for s in (int(v) for v in a.seqs.split(",")):
@@ -195,17 +207,21 @@ def main() -> int:
                             return f()
                     return run
 
-                cands.append(bl.Candidate("pytorch_eager", "eager", nograd(lambda: stock(x, use_cache=False).logits)))
-                cands.append(bl.Candidate("ccml", "eager+ccml",
-                                          nograd(lambda: ccml_model(x, use_cache=False).logits)))
-                for name, m in (("compile", stock), ("compile+ccml", ccml_model)):
+                models = (("", stock), ("+ccml", ccml_model), ("+ccml-nolinear", nolin))
+                for suffix, m in models:
+                    cands.append(bl.Candidate("pytorch_eager" if m is stock else "ccml",
+                                              "eager" + suffix,
+                                              nograd(lambda m=m: m(x, use_cache=False).logits)))
+                for suffix, m in models:
+                    name = "compile" + suffix
                     try:
                         cm = torch.compile(m)
                         cands.append(bl.Candidate("torch_compile" if m is stock else "ccml", name,
                                                   nograd(lambda cm=cm: cm(x, use_cache=False).logits)))
                     except Exception as e:  # noqa: BLE001
                         notes[name] = f"{type(e).__name__}: {e}"
-                for name, m in (("cudagraph", stock), ("cudagraph+ccml", ccml_model)):
+                for suffix, m in models:
+                    name = "cudagraph" + suffix
                     try:
                         cands.append(bl.Candidate("cuda_graph" if m is stock else "ccml", name,
                                                   graph_forward(m, x)))
