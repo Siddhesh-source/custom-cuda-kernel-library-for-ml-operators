@@ -26,16 +26,6 @@ ccml_status validate(const Public* y, const Public* x, int rows, int cols) {
   return CCML_SUCCESS;
 }
 
-/* AUTO (enhancement S4), from the Kaggle T4 run at commit 01c3555
-   (results/sm_75/softmax_variants/, docs/results/phase-13-softmax.md): the
-   best variant per column bucket was WARP_PER_ROW for every shape with
-   cols <= 1024 (17 of 17, all dtypes), and ONLINE or SPLIT_ROW above; SPLIT_ROW
-   runs ONLINE itself whenever the row count already fills the GPU, so it
-   covers both. */
-ccml_softmax_algo resolve(ccml_softmax_algo algo, int cols) {
-  if (algo != CCML_SOFTMAX_AUTO) return algo;
-  return cols <= 1024 ? CCML_SOFTMAX_WARP_PER_ROW : CCML_SOFTMAX_SPLIT_ROW;
-}
 
 /* Warp per row (entry 14). */
 template <typename T, int kV, int kChunks>
@@ -134,9 +124,30 @@ ccml_status launch_block_resident(T* y, const T* x, int rows, int cols, cudaStre
              : launch_br_chunks<T, 1>(y, x, rows, cols, stream);
 }
 
+/* AUTO (enhancement S4), from the Kaggle T4 run at commit a56eb2b
+   (results/sm_75/softmax_variants/, docs/results/phase-13-softmax.md), best
+   variant per bucket:
+     cols <= 256: WARP_PER_ROW (all dtypes);
+     257-1024: WARP_PER_ROW for 16-bit (BLOCK_RESIDENT 30-40% slower), but
+       BLOCK_RESIDENT for FP32 (1.05-1.06x faster, 7 of 7 large shapes);
+     above 1024, the row fitting in registers: BLOCK_RESIDENT (4 of 5 shapes
+       per dtype, 1.3-2.5x over ONLINE), except few rows long enough for
+       SPLIT_ROW to split (rows <= 16, cols >= 2 x kMinSegment);
+     otherwise SPLIT_ROW (1-16 vocabulary rows; it runs ONLINE when the rows
+       already fill the GPU). */
+constexpr int kMinSegment = 2048;
+
+template <typename T>
+ccml_softmax_algo resolve_auto(const T* y, const T* x, int rows, int cols) {
+  if (cols <= 256) return CCML_SOFTMAX_WARP_PER_ROW;
+  if (cols <= 1024 && sizeof(T) == 2) return CCML_SOFTMAX_WARP_PER_ROW;
+  const bool fits = cols <= block_resident_max_cols<T>(softmax_vec_ok(y, x, cols));
+  if (fits && (rows > 16 || cols < 2 * kMinSegment)) return CCML_SOFTMAX_BLOCK_RESIDENT;
+  return cols <= 1024 ? CCML_SOFTMAX_WARP_PER_ROW : CCML_SOFTMAX_SPLIT_ROW;
+}
+
 /* Split row (entry 15): S segments per row so that rows x S >= 2 x SMs, each
    segment at least kMinSegment columns. S = 1 runs ONLINE (no workspace). */
-constexpr int kMinSegment = 2048;
 
 int sm_count() {
   static const int count = [] {
@@ -200,7 +211,8 @@ ccml_status softmax(Public* y_pub, const Public* x_pub, int rows, int cols,
   T* y = ccml::detail::device_ptr(y_pub);
   const T* x = ccml::detail::device_ptr(x_pub);
 
-  switch (resolve(algo, cols)) {
+  if (algo == CCML_SOFTMAX_AUTO) algo = resolve_auto(y, x, rows, cols);
+  switch (algo) {
     case CCML_SOFTMAX_BLOCK_PER_ROW: {
       /* One block per row. A row count above the device's grid limit is caught
          by validate_launch inside CCML_LAUNCH and reported as such, rather than
