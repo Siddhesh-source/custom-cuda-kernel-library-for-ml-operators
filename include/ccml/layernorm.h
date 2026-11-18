@@ -10,7 +10,7 @@ extern "C" {
 #endif
 
 typedef enum ccml_layernorm_algo {
-  CCML_LAYERNORM_AUTO     = 0, /* library picks; currently resolves to TWO_PASS */
+  CCML_LAYERNORM_AUTO     = 0, /* measured: WARP_PER_ROW <= 256 cols, VECTORIZED <= 1024, else WELFORD */
   CCML_LAYERNORM_TWO_PASS = 1, /* separate mean and variance reductions */
   CCML_LAYERNORM_WELFORD  = 2, /* single-pass FP32 Welford on pivot-shifted data, block per row */
   /* One warp per row, the row held in registers (cols <= 1024; wider rows
