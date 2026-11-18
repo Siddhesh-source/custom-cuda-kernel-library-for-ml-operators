@@ -222,11 +222,11 @@ def main() -> int:
                 gated = []
                 for c in cands:
                     try:
-                        out = c.fn()
+                        got = c.fn()
                         refs = [ref] if c.ref is None else list(c.ref)
                         # Pass against any of the candidate's valid contracts;
                         # report the errors of the closest one.
-                        res = [bl.compare(out, r, *tol) for r in refs]
+                        res = [bl.compare(got, r, *tol) for r in refs]
                         ok, mabs, mrel = max(res, key=lambda t: (t[0], -t[1]))
                         torch.cuda.synchronize()
                         gated.append((c, "PASS" if ok else "FAIL", mabs, mrel))
