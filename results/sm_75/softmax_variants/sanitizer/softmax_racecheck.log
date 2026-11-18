@@ -19,7 +19,7 @@
 [PASS] softmax.large_negative_inputs
        mean=-5000: n=4096 max_abs=2.694e-08 max_rel=1.454e-07 normalized=0.010 worst_index=2729 nonfinite=0
 [PASS] softmax.extreme_dynamic_range
-       range +/-10000: n=4096 max_abs=2.731e-08 max_rel=1.000e+00 normalized=0.003 worst_index=3848 nonfinite=0
+       range +/-10000: n=4096 max_abs=5.930e-08 max_rel=1.000e+00 normalized=0.007 worst_index=2111 nonfinite=0
 [PASS] softmax.dominant_element_gives_one_hot
 [PASS] softmax.constant_row_is_uniform
 [PASS] softmax.rejects_null_and_nonpositive_dimensions
@@ -28,11 +28,14 @@
        online: worst normalized error 0.184241
        warp_per_row: worst normalized error 0.186323
        split_row: worst normalized error 0.184241
+       block_resident: worst normalized error 0.186923
 [PASS] softmax.special_values_policy
 [PASS] softmax.warp_per_row_buckets_and_paths
        worst normalized error 0.301079
+[PASS] softmax.block_resident_buckets_and_limits
+       worst normalized error 0.435095
 [PASS] softmax.split_row_long_rows_and_policy
        worst normalized error 0.006683
 
-16 passed, 0 failed, 0 skipped
+17 passed, 0 failed, 0 skipped
 ========= RACECHECK SUMMARY: 0 hazards displayed (0 errors, 0 warnings)

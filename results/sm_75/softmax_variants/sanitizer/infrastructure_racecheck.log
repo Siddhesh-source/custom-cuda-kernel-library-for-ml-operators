@@ -18,7 +18,7 @@
        message: excess_shared: requested 50176 bytes of shared memory, above the device limit of 49152 per block
 [PASS] infrastructure.rejected_launch_leaves_the_device_usable
 [PASS] infrastructure.event_timer_measures_a_kernel
-       measured 10.512384 ms
+       measured 10.412032 ms
 [PASS] infrastructure.failures_report_detail_not_just_a_code
        detail: ccml_device_malloc: ptr is null
 [PASS] infrastructure.cuda_failures_carry_the_runtime_message
